@@ -24,7 +24,7 @@
 		"legacy_stdio_definitions"
 	],
 	"lflags-windows": [
-		"/LIBPATH:./native/windows"
+		"/LIBPATH:."
 	],
 
 	"preBuildCommands": ["dub run raylib-d:install -- -q -u=no"],

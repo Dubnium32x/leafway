@@ -10,25 +10,25 @@ s x z
 s x z
 p 0
 . . . continue til the end of the points
-f y0 y1 (yMin and yMax are used for rendering the sectors)
+f y0 y1 (y0 and y1 are the floor and ceiling values for the sector)
 
 s x z
 s x z 
 s x z
 p 12
-f y0 y1 (yMin and yMax are used for rendering the sectors)
+f y0 y1 (y0 and y1 are the floor and ceiling values for the sector)
 
 w x z
 w x z   
 p 4
 . . . continue til the end of the walls
-f y0 y1 (yMin and yMax are used for rendering the walls)
+f y0 y1 (y0 and y1 are the floor and ceiling values for the wall)
 
 w x z
 w x z   
 p 8
 . . . continue til the end of the walls
-f y0 y1 (yMin and yMax are used for rendering the walls)
+f y0 y1 (y0 and y1 are the floor and ceiling values for the wall)
 
 o x y z i (contains the position and the data index of the object)
 . . . continue til the end of the objects
@@ -45,8 +45,8 @@ The first line of the chunk data in the `.leaf` file is the chunk init. This lin
 # Palette
 Palettes, represented by a `p` followed by the palette index, are used to define the colors of the sector or walls, which is used for rendering the map. The palette index is used to determine which palette to use for rendering the sector or wall, and it can be used to create different visual styles for the map. The palette index does not affect the collision detection or the position of objects in the map, so it is only used for rendering purposes.
 
-## Sector Walls
-The sector walls's `f` stores both the minimum and maximum "floor" and "ceiling" heights of the sector. This is used for rendering the sectors in the map, but it does not affect the collision detection or the position of objects in the map. The sector walls are used to define the shape of the sectors in the map, and they are double sided, meaning that they can be seen from both sides.
+## Sector Heights
+Each sector uses `f y0 y1` to store its floor and ceiling values. In editor terms this is the height range for the sector or face. This is used for rendering the sector in the map, but it does not affect the position of objects in the map.
 
 ## Chunk Bounds
 The chunk bounds are on the second line and are represented by a `c` followed by the minimum and maximum x and z coordinates of the chunk. This is used to determine if a point, wall, or object is within the chunk. When considering the limitations of the y axis, no boundaries are necessary, because the y axis is only used for rendering and does not affect the chunk's content.
@@ -55,7 +55,7 @@ The chunk bounds are on the second line and are represented by a `c` followed by
 The next number of lines after the chunk bounds are the points. Each sector point is represented by an `s` followed by the x and z coordinates of the point. These points are used to define the shape of the sectors in the map.
 
 ## Walls
-Walls are the same as sectors, except these are double sided and are represented by a `w` followed by the x and z coordinates of the wall. These walls are used to define the shape of the walls in the map. The `f` after the walls is used to define the minimum and maximum heights of the walls, which is used for rendering the walls in the map.
+Walls are represented by a `w` followed by the x and z coordinates of the wall. Like sectors, walls also use `f y0 y1` to define their floor and ceiling values. In other words, both sectors and walls carry a height range, but they are different primitives in the editor and in the map format.
 
 ## Objects
 Objects are represented by an `o` followed by the x, y, and z coordinates of the object, as well as the data index of the object. These objects are used to define the position and type of objects in the map.
@@ -75,4 +75,4 @@ They are not necessary for the chunk data because they do not affect the chunk's
 It's also worth noting that the chunk data takes inspiration from the original DOOM map format, which also did not include slopes in the map data. This is because slopes can be calculated based on the points and walls in the chunk, and including them in the chunk data would be redundant.
 
 ## Faces
-The faces of the map would work similarly to the walls, but they would be used for rendering height differences in the map. Similiar to DOOM, the faces would be defined by the points in the chunk and would be used to create the visual appearance of the map. However, they would not affect the collision detection or the position of objects in the map, so they would not be included in the chunk data.
+In the editor, faces are the sector-style polygons built from chunk points. They carry the same `y0/y1` idea as sectors: a floor value and a ceiling value. Walls also carry `y0/y1`, but they are edge primitives instead of area primitives.
