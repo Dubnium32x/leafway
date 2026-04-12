@@ -1,0 +1,34 @@
+{
+	"authors": [
+		"DiSKOdev"
+	],
+	"copyright": "Copyright © 2026, DiSKOdev",
+	"dependencies": {
+		"raygui-d": "~>4.0.1",
+		"raylib-d": "~>5.5.3"
+	},
+	"libs-linux": ["raylib"],
+	"lflags-linux": [
+		"-L.",
+		"-Wl,-rpath=$$ORIGIN"
+	],
+
+	"libs-windows": [
+		"raylib",
+		"winmm",
+		"gdi32",
+		"opengl32",
+		"user32",
+		"shell32",
+		"advapi32",
+		"legacy_stdio_definitions"
+	],
+	"lflags-windows": [
+		"/LIBPATH:./native/windows"
+	],
+
+	"preBuildCommands": ["dub run raylib-d:install -- -q -u=no"],
+	"description": "A 3D Map Editor for Playdate Games",
+	"license": "GPL-3.0",
+	"name": "leafway"
+}

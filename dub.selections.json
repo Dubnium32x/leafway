@@ -1,0 +1,8 @@
+{
+	"fileVersion": 1,
+	"versions": {
+		"raygui-d": "4.0.1",
+		"raylib-d": "5.5.3",
+		"tinyfiledialogs": "0.10.1"
+	}
+}
