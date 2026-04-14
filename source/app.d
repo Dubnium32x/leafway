@@ -95,11 +95,22 @@ struct GridLayout {
     float cellSize;
 }
 
+struct PreviewWorldBounds {
+    Rectangle horizontal;
+    float minHeight;
+    float maxHeight;
+}
+
 private int clampInt(int value, int minimum, int maximum)
 {
     if (value < minimum) return minimum;
     if (value > maximum) return maximum;
     return value;
+}
+
+private float absFloat(float value)
+{
+    return value < 0.0f ? -value : value;
 }
 
 private int positiveModulo(int value, int divisor)
@@ -672,6 +683,74 @@ private Rectangle getChunkBoundsRect(MapChunk chunk)
     return Rectangle(0.0f, 0.0f, chunk.width * mapGridCellSize, chunk.height * mapGridCellSize);
 }
 
+private Vector2 getChunkWorldOffset(MapChunk chunk)
+{
+    return Vector2(chunk.column * mapGridCellSize, chunk.row * mapGridCellSize);
+}
+
+private PreviewWorldBounds getChunkPreviewBounds(MapChunk[] placedChunks, ChunkGeometry[] chunkGeometries)
+{
+    if (placedChunks.length == 0) {
+        return PreviewWorldBounds(
+            Rectangle(-mapGridCellSize * 0.5f, -mapGridCellSize * 0.5f, mapGridCellSize, mapGridCellSize),
+            0.0f,
+            mapGridCellSize * 2.0f
+        );
+    }
+
+    const firstOffset = getChunkWorldOffset(placedChunks[0]);
+    float minX = firstOffset.x;
+    float minZ = firstOffset.y;
+    float maxX = firstOffset.x + placedChunks[0].width * mapGridCellSize;
+    float maxZ = firstOffset.y + placedChunks[0].height * mapGridCellSize;
+    float minHeight = 0.0f;
+    float maxHeight = mapGridCellSize * 2.0f;
+
+    foreach (index, chunk; placedChunks) {
+        const chunkOffset = getChunkWorldOffset(chunk);
+        const chunkMaxX = chunkOffset.x + chunk.width * mapGridCellSize;
+        const chunkMaxZ = chunkOffset.y + chunk.height * mapGridCellSize;
+
+        if (chunkOffset.x < minX) minX = chunkOffset.x;
+        if (chunkOffset.y < minZ) minZ = chunkOffset.y;
+        if (chunkMaxX > maxX) maxX = chunkMaxX;
+        if (chunkMaxZ > maxZ) maxZ = chunkMaxZ;
+
+        if (index >= chunkGeometries.length) {
+            continue;
+        }
+
+        foreach (face; chunkGeometries[index].faces) {
+            if (face.floorHeight < minHeight) minHeight = face.floorHeight;
+            if (face.ceilingHeight < minHeight) minHeight = face.ceilingHeight;
+            if (face.floorHeight > maxHeight) maxHeight = face.floorHeight;
+            if (face.ceilingHeight > maxHeight) maxHeight = face.ceilingHeight;
+        }
+
+        foreach (wall; chunkGeometries[index].walls) {
+            if (wall.floorHeight < minHeight) minHeight = wall.floorHeight;
+            if (wall.ceilingHeight < minHeight) minHeight = wall.ceilingHeight;
+            if (wall.floorHeight > maxHeight) maxHeight = wall.floorHeight;
+            if (wall.ceilingHeight > maxHeight) maxHeight = wall.ceilingHeight;
+        }
+    }
+
+    return PreviewWorldBounds(Rectangle(minX, minZ, maxX - minX, maxZ - minZ), minHeight, maxHeight);
+}
+
+private float getChunkPreviewDefaultDistance(PreviewWorldBounds bounds)
+{
+    const horizontalSpan = max(bounds.horizontal.width, bounds.horizontal.height);
+    const verticalSpan = max(bounds.maxHeight - bounds.minHeight, mapGridCellSize * 2.0f);
+    const sceneSpan = max(horizontalSpan, verticalSpan);
+    return sceneSpan * 1.8f + 64.0f;
+}
+
+private float getChunkPreviewMaxDistance(PreviewWorldBounds bounds)
+{
+    return max(640.0f, getChunkPreviewDefaultDistance(bounds) * 4.0f);
+}
+
 private int getPaletteTileSize(Image ditherImage)
 {
     return ditherImage.height >= 2 ? ditherImage.height / 2 : 1;
@@ -844,9 +923,9 @@ private void drawDoubleSidedTriangle3D(Vector3 a, Vector3 b, Vector3 c, Color co
     DrawTriangle3D(c, b, a, color);
 }
 
-private void drawChunkFacePreview3D(ChunkGeometry geometry, ChunkFace face, Image ditherImage)
+private void drawChunkFacePreview3D(ChunkGeometry geometry, ChunkFace face, Image ditherImage, Vector2 offset = Vector2.zero)
 {
-    auto polygonPoints = getFacePolygonPoints(geometry, face);
+    auto polygonPoints = getFacePolygonPoints(geometry, face, offset);
     if (polygonPoints.length < 3) {
         return;
     }
@@ -891,7 +970,7 @@ private void drawChunkFacePreview3D(ChunkGeometry geometry, ChunkFace face, Imag
     }
 }
 
-private void drawChunkWallPreview3D(ChunkGeometry geometry, ChunkWall wall, Image ditherImage)
+private void drawChunkWallPreview3D(ChunkGeometry geometry, ChunkWall wall, Image ditherImage, Vector2 offset = Vector2.zero)
 {
     if (wall.startPointIndex < 0 || wall.startPointIndex >= cast(int)geometry.points.length) return;
     if (wall.endPointIndex < 0 || wall.endPointIndex >= cast(int)geometry.points.length) return;
@@ -900,10 +979,10 @@ private void drawChunkWallPreview3D(ChunkGeometry geometry, ChunkWall wall, Imag
     const endPoint = getChunkPointPosition(geometry.points[wall.endPointIndex]);
     const color = getPalettePreviewColor(ditherImage, wall.paletteIndex);
 
-    const lowerA = Vector3(startPoint.x, wall.floorHeight, startPoint.y);
-    const upperA = Vector3(startPoint.x, wall.ceilingHeight, startPoint.y);
-    const lowerB = Vector3(endPoint.x, wall.floorHeight, endPoint.y);
-    const upperB = Vector3(endPoint.x, wall.ceilingHeight, endPoint.y);
+    const lowerA = Vector3(offset.x + startPoint.x, wall.floorHeight, offset.y + startPoint.y);
+    const upperA = Vector3(offset.x + startPoint.x, wall.ceilingHeight, offset.y + startPoint.y);
+    const lowerB = Vector3(offset.x + endPoint.x, wall.floorHeight, offset.y + endPoint.y);
+    const upperB = Vector3(offset.x + endPoint.x, wall.ceilingHeight, offset.y + endPoint.y);
 
     drawDoubleSidedTriangle3D(lowerA, lowerB, upperA, color);
     drawDoubleSidedTriangle3D(upperA, lowerB, upperB, color);
@@ -930,7 +1009,7 @@ private void drawPreviewWallSegment(Vector2 startPoint, Vector2 endPoint, int lo
     DrawLine3D(upperA, upperB, Fade(Colors.MAROON, 0.9f));
 }
 
-private void drawChunkAutoWallsPreview3D(ChunkGeometry geometry, int faceIndex, Image ditherImage)
+private void drawChunkAutoWallsPreview3D(ChunkGeometry geometry, int faceIndex, Image ditherImage, Vector2 offset = Vector2.zero)
 {
     if (faceIndex < 0 || faceIndex >= cast(int)geometry.faces.length) {
         return;
@@ -949,8 +1028,10 @@ private void drawChunkAutoWallsPreview3D(ChunkGeometry geometry, int faceIndex, 
         if (pointAIndex < 0 || pointAIndex >= cast(int)geometry.points.length) continue;
         if (pointBIndex < 0 || pointBIndex >= cast(int)geometry.points.length) continue;
 
-        const startPoint = getChunkPointPosition(geometry.points[pointAIndex]);
-        const endPoint = getChunkPointPosition(geometry.points[pointBIndex]);
+        const localStartPoint = getChunkPointPosition(geometry.points[pointAIndex]);
+        const localEndPoint = getChunkPointPosition(geometry.points[pointBIndex]);
+        const startPoint = Vector2(offset.x + localStartPoint.x, offset.y + localStartPoint.y);
+        const endPoint = Vector2(offset.x + localEndPoint.x, offset.y + localEndPoint.y);
         const adjacentFaceIndex = findAdjacentFaceForEdge(geometry, faceIndex, pointAIndex, pointBIndex);
 
         if (adjacentFaceIndex < 0) {
@@ -973,11 +1054,13 @@ private void drawChunkAutoWallsPreview3D(ChunkGeometry geometry, int faceIndex, 
     }
 }
 
-private Camera3D getChunkPreviewCamera(MapChunk chunk, float yaw, float pitch, float distance)
+private Camera3D getChunkPreviewCamera(PreviewWorldBounds bounds, float yaw, float pitch, float distance)
 {
-    const centerX = chunk.width * mapGridCellSize * 0.5f;
-    const centerZ = chunk.height * mapGridCellSize * 0.5f;
-    const target = Vector3(centerX, 12.0f, centerZ);
+    const target = Vector3(
+        bounds.horizontal.x + bounds.horizontal.width * 0.5f,
+        (bounds.minHeight + bounds.maxHeight) * 0.5f,
+        bounds.horizontal.y + bounds.horizontal.height * 0.5f
+    );
 
     return Camera3D(
         Vector3(
@@ -992,7 +1075,15 @@ private Camera3D getChunkPreviewCamera(MapChunk chunk, float yaw, float pitch, f
     );
 }
 
-private void renderChunkPreview3D(RenderTexture2D renderTexture, Camera3D camera, MapChunk chunk, ChunkGeometry geometry, Image ditherImage)
+private void renderChunkPreview3D(
+    RenderTexture2D renderTexture,
+    Camera3D camera,
+    MapChunk[] placedChunks,
+    ChunkGeometry[] chunkGeometries,
+    int highlightedChunkIndex,
+    PreviewWorldBounds bounds,
+    Image ditherImage,
+)
 {
     BeginTextureMode(renderTexture);
     scope(exit) EndTextureMode();
@@ -1001,20 +1092,44 @@ private void renderChunkPreview3D(RenderTexture2D renderTexture, Camera3D camera
     BeginMode3D(camera);
     scope(exit) EndMode3D();
 
-    const gridSize = max(cast(int)chunk.width, cast(int)chunk.height) * 2;
-    DrawGrid(gridSize > 8 ? gridSize : 8, mapGridCellSize);
+    const minX = bounds.horizontal.x;
+    const maxX = bounds.horizontal.x + bounds.horizontal.width;
+    const minZ = bounds.horizontal.y;
+    const maxZ = bounds.horizontal.y + bounds.horizontal.height;
+    const farthestX = max(absFloat(minX), absFloat(maxX));
+    const farthestZ = max(absFloat(minZ), absFloat(maxZ));
+    const gridRadius = max(farthestX, farthestZ) + mapGridCellSize * 4.0f;
+    const gridSize = max(8, cast(int)(gridRadius / mapGridCellSize) * 2);
+    DrawGrid(gridSize, mapGridCellSize);
 
-    foreach (faceIndex, face; geometry.faces) {
-        drawChunkFacePreview3D(geometry, face, ditherImage);
-        drawChunkAutoWallsPreview3D(geometry, cast(int)faceIndex, ditherImage);
+    foreach (index, chunk; placedChunks) {
+        const chunkOffset = getChunkWorldOffset(chunk);
+
+        if (index < chunkGeometries.length) {
+            foreach (faceIndex, face; chunkGeometries[index].faces) {
+                drawChunkFacePreview3D(chunkGeometries[index], face, ditherImage, chunkOffset);
+                drawChunkAutoWallsPreview3D(chunkGeometries[index], cast(int)faceIndex, ditherImage, chunkOffset);
+            }
+
+            foreach (wall; chunkGeometries[index].walls) {
+                drawChunkWallPreview3D(chunkGeometries[index], wall, ditherImage, chunkOffset);
+            }
+        }
+
+        const chunkCenter = Vector3(
+            chunkOffset.x + chunk.width * mapGridCellSize * 0.5f,
+            mapGridCellSize,
+            chunkOffset.y + chunk.height * mapGridCellSize * 0.5f
+        );
+        const outlineColor = cast(int)index == highlightedChunkIndex
+            ? Fade(Colors.GOLD, 0.85f)
+            : Fade(Colors.RAYWHITE, 0.35f);
+        DrawCubeWiresV(
+            chunkCenter,
+            Vector3(chunk.width * mapGridCellSize, mapGridCellSize * 2.0f, chunk.height * mapGridCellSize),
+            outlineColor
+        );
     }
-
-    foreach (wall; geometry.walls) {
-        drawChunkWallPreview3D(geometry, wall, ditherImage);
-    }
-
-    const chunkCenter = Vector3(chunk.width * mapGridCellSize * 0.5f, mapGridCellSize, chunk.height * mapGridCellSize * 0.5f);
-    DrawCubeWiresV(chunkCenter, Vector3(chunk.width * mapGridCellSize, mapGridCellSize * 2.0f, chunk.height * mapGridCellSize), Fade(Colors.GOLD, 0.65f));
 }
 
 private void drawMapCanvas(
@@ -1306,11 +1421,11 @@ private string[] getMenuOptions(int toolbarIndex)
     case 3:
         return [];
     case 4:
-        return [];
+        return ["Center Camera", "Zoom to Fit", "Clear All Chunks"];
     case 5:
-        return [];
+        return ["Select All Points", "Deselect All", "Validate Geometry"];
     case 6:
-        return [];
+        return ["About Leafway", "Keyboard Shortcuts"];
     default:
         return [];
     }
@@ -1396,6 +1511,288 @@ private void drawActiveToolHighlight(Rectangle bounds)
     DrawRectangleLinesEx(highlightBounds, 2.0f, Fade(Colors.GOLD, 0.96f));
 }
 
+private void clearChunkEditorSelection(
+    ref int[] selectedPointIndices,
+    ref int[] selectedFaceIndices,
+    ref int[] selectedWallIndices,
+)
+{
+    selectedPointIndices.length = 0;
+    selectedFaceIndices.length = 0;
+    selectedWallIndices.length = 0;
+}
+
+private void setMapChunkTool(ref ChunkTool activeChunkTool, ChunkTool nextTool, ref string chunkToolMessage, Sound clickSound)
+{
+    activeChunkTool = nextTool;
+
+    final switch (nextTool) {
+    case ChunkTool.draw:
+        chunkToolMessage = "Draw mode: drag on the canvas to create a new chunk.";
+        break;
+    case ChunkTool.move:
+        chunkToolMessage = "Move mode: drag a chunk to reposition it.";
+        break;
+    case ChunkTool.resize:
+        chunkToolMessage = "Resize is disabled to preserve chunk geometry.";
+        break;
+    case ChunkTool.deleteChunk:
+        chunkToolMessage = "Delete mode: click a chunk to remove it.";
+        break;
+    case ChunkTool.edit:
+        chunkToolMessage = "Edit mode: click a chunk to inspect it.";
+        break;
+    }
+
+    PlaySound(clickSound);
+}
+
+private void setChunkEditorTool(ref ChunkEditorTool chunkEditorTool, ChunkEditorTool nextTool, ref string chunkEditorMessage, Sound clickSound)
+{
+    chunkEditorTool = nextTool;
+    chunkEditorMessage = nextTool == ChunkEditorTool.placePoint
+        ? "Point mode: click to place snapped points inside the chunk bounds."
+        : "Select mode: click points or face centers.";
+    PlaySound(clickSound);
+}
+
+private void createSelectedFace(
+    ref ChunkGeometry geometry,
+    ref int[] selectedPointIndices,
+    ref int[] selectedFaceIndices,
+    ref string chunkEditorMessage,
+    Sound connectSound,
+    Sound touchSound,
+)
+{
+    if (selectedPointIndices.length < 3) {
+        chunkEditorMessage = "Select at least 3 points to create a face.";
+        PlaySound(touchSound);
+        return;
+    }
+
+    const orderedPointIndices = sortFacePointIndices(geometry, selectedPointIndices);
+    if (faceOverlapsExistingFaces(geometry, orderedPointIndices)) {
+        chunkEditorMessage = "Face is invalid: it overlaps another face or crosses itself.";
+        PlaySound(touchSound);
+        return;
+    }
+
+    geometry.faces ~= ChunkFace(orderedPointIndices.dup, 0, 16, 0, true, false);
+    selectedFaceIndices = [cast(int)geometry.faces.length - 1];
+    selectedPointIndices.length = 0;
+    chunkEditorMessage = to!string(TextFormat("Created face %d.", selectedFaceIndices[0] + 1));
+    PlaySound(connectSound);
+}
+
+private void deleteSelectedFaces(
+    ref ChunkGeometry geometry,
+    ref int[] selectedFaceIndices,
+    ref string chunkEditorMessage,
+    Sound deleteSound,
+    Sound touchSound,
+)
+{
+    if (selectedFaceIndices.length == 0) {
+        chunkEditorMessage = "Select one or more faces to delete.";
+        PlaySound(touchSound);
+        return;
+    }
+
+    auto faceIndicesToDelete = selectedFaceIndices.dup;
+    faceIndicesToDelete.sort!((a, b) => a > b);
+    foreach (faceIndex; faceIndicesToDelete) {
+        if (faceIndex >= 0 && faceIndex < cast(int)geometry.faces.length) {
+            removeFaceAt(geometry, faceIndex);
+        }
+    }
+
+    chunkEditorMessage = to!string(TextFormat("Deleted %d face(s).", cast(int)faceIndicesToDelete.length));
+    selectedFaceIndices.length = 0;
+    PlaySound(deleteSound);
+}
+
+private void createSelectedWall(
+    ref ChunkGeometry geometry,
+    ref int[] selectedPointIndices,
+    ref int[] selectedFaceIndices,
+    ref int[] selectedWallIndices,
+    ref string chunkEditorMessage,
+    Sound connectSound,
+    Sound touchSound,
+)
+{
+    if (selectedPointIndices.length != 2) {
+        chunkEditorMessage = "Select exactly 2 points to create a wall.";
+        PlaySound(touchSound);
+        return;
+    }
+
+    const pointAIndex = selectedPointIndices[0];
+    const pointBIndex = selectedPointIndices[1];
+    if (pointAIndex == pointBIndex) {
+        chunkEditorMessage = "Pick two different points to create a wall.";
+        PlaySound(touchSound);
+        return;
+    }
+    if (chunkGeometryHasWall(geometry, pointAIndex, pointBIndex)) {
+        chunkEditorMessage = "That wall already exists.";
+        PlaySound(touchSound);
+        return;
+    }
+
+    geometry.walls ~= ChunkWall(pointAIndex, pointBIndex, 0, 16, 0);
+    selectedWallIndices = [cast(int)geometry.walls.length - 1];
+    selectedPointIndices.length = 0;
+    selectedFaceIndices.length = 0;
+    chunkEditorMessage = to!string(TextFormat("Created wall %d.", selectedWallIndices[0] + 1));
+    PlaySound(connectSound);
+}
+
+private void deleteSelectedWalls(
+    ref ChunkGeometry geometry,
+    ref int[] selectedWallIndices,
+    ref string chunkEditorMessage,
+    Sound deleteSound,
+    Sound touchSound,
+)
+{
+    if (selectedWallIndices.length == 0) {
+        chunkEditorMessage = "Select one or more walls to delete.";
+        PlaySound(touchSound);
+        return;
+    }
+
+    auto wallIndicesToDelete = selectedWallIndices.dup;
+    wallIndicesToDelete.sort!((a, b) => a > b);
+    foreach (wallIndex; wallIndicesToDelete) {
+        if (wallIndex >= 0 && wallIndex < cast(int)geometry.walls.length) {
+            removeWallAt(geometry, wallIndex);
+        }
+    }
+
+    chunkEditorMessage = to!string(TextFormat("Deleted %d wall(s).", cast(int)wallIndicesToDelete.length));
+    selectedWallIndices.length = 0;
+    PlaySound(deleteSound);
+}
+
+private void deleteSelectedPoints(
+    ref ChunkGeometry geometry,
+    ref int[] selectedPointIndices,
+    ref int[] selectedFaceIndices,
+    ref int[] selectedWallIndices,
+    ref string chunkEditorMessage,
+    Sound deleteSound,
+    Sound touchSound,
+)
+{
+    if (selectedPointIndices.length == 0) {
+        chunkEditorMessage = "Select one or more points to delete.";
+        PlaySound(touchSound);
+        return;
+    }
+
+    bool pointUsedByWall = false;
+    foreach (selectedPointIndex; selectedPointIndices) {
+        if (pointIsUsedByWall(geometry, selectedPointIndex)) {
+            pointUsedByWall = true;
+            break;
+        }
+    }
+
+    if (selectedPointsUsedByUnselectedFaces(geometry, selectedPointIndices, selectedFaceIndices) || pointUsedByWall) {
+        chunkEditorMessage = pointUsedByWall
+            ? "Delete linked walls first before removing those points."
+            : "Delete linked faces first, or select those faces too.";
+        PlaySound(touchSound);
+        return;
+    }
+
+    auto pointIndicesToDelete = selectedPointIndices.dup;
+    pointIndicesToDelete.sort!((a, b) => a > b);
+    foreach (pointIndex; pointIndicesToDelete) {
+        if (pointIndex >= 0 && pointIndex < cast(int)geometry.points.length) {
+            removePointAt(geometry, pointIndex);
+        }
+    }
+
+    clearChunkEditorSelection(selectedPointIndices, selectedFaceIndices, selectedWallIndices);
+    chunkEditorMessage = to!string(TextFormat("Deleted %d point(s).", cast(int)pointIndicesToDelete.length));
+    PlaySound(deleteSound);
+}
+
+private void deleteCurrentChunkEditorSelection(
+    ref ChunkGeometry geometry,
+    ref int[] selectedPointIndices,
+    ref int[] selectedFaceIndices,
+    ref int[] selectedWallIndices,
+    ref string chunkEditorMessage,
+    Sound deleteSound,
+    Sound touchSound,
+)
+{
+    if (selectedFaceIndices.length > 0) {
+        deleteSelectedFaces(geometry, selectedFaceIndices, chunkEditorMessage, deleteSound, touchSound);
+        return;
+    }
+    if (selectedWallIndices.length > 0) {
+        deleteSelectedWalls(geometry, selectedWallIndices, chunkEditorMessage, deleteSound, touchSound);
+        return;
+    }
+
+    deleteSelectedPoints(geometry, selectedPointIndices, selectedFaceIndices, selectedWallIndices, chunkEditorMessage, deleteSound, touchSound);
+}
+
+private void selectAllChunkPoints(
+    ChunkGeometry geometry,
+    ref int[] selectedPointIndices,
+    ref int[] selectedFaceIndices,
+    ref int[] selectedWallIndices,
+    ref string chunkEditorMessage,
+    Sound clickSound,
+    Sound touchSound,
+)
+{
+    if (geometry.points.length == 0) {
+        chunkEditorMessage = "There are no points to select.";
+        PlaySound(touchSound);
+        return;
+    }
+
+    selectedPointIndices.length = 0;
+    selectedPointIndices.reserve(geometry.points.length);
+    foreach (index; 0 .. geometry.points.length) {
+        selectedPointIndices ~= cast(int)index;
+    }
+    selectedFaceIndices.length = 0;
+    selectedWallIndices.length = 0;
+    chunkEditorMessage = to!string(TextFormat("Selected %d point(s).", cast(int)selectedPointIndices.length));
+    PlaySound(clickSound);
+}
+
+private void returnToMapFromChunkEditor(
+    ref AppScreen appScreen,
+    ref int selectedChunkIndex,
+    ref int editingChunkIndex,
+    ref int[] selectedPointIndices,
+    ref int[] selectedFaceIndices,
+    ref int[] selectedWallIndices,
+    ref bool isBoxSelecting,
+    ref string chunkEditorMessage,
+    ref string chunkToolMessage,
+    Sound clickSound,
+)
+{
+    appScreen = AppScreen.map;
+    selectedChunkIndex = editingChunkIndex;
+    clearChunkEditorSelection(selectedPointIndices, selectedFaceIndices, selectedWallIndices);
+    isBoxSelecting = false;
+    editingChunkIndex = -1;
+    chunkEditorMessage = "Returned to the map canvas.";
+    chunkToolMessage = "Edit mode: click a chunk to inspect it.";
+    PlaySound(clickSound);
+}
+
 private void applyToolbarAction(
     int toolbarIndex,
     int optionIndex,
@@ -1410,6 +1807,15 @@ private void applyToolbarAction(
     ref MapChunk[] placedChunks,
     ref ChunkGeometry[] chunkGeometries,
     ref bool shouldExit,
+    ref Camera2D mapCamera,
+    ref Camera2D chunkEditorCamera,
+    ref int[] selectedPointIndices,
+    ref int[] selectedFaceIndices,
+    ref int[] selectedWallIndices,
+    ref string chunkToolMessage,
+    ref string chunkEditorMessage,
+    ref bool showAboutDialog,
+    ref bool showShortcutsDialog,
 )
 {
     switch (toolbarIndex) {
@@ -1482,10 +1888,28 @@ private void applyToolbarAction(
     case 4:
         switch (optionIndex) {
         case 0:
+            mapCamera.target = Vector2(0.0f, 0.0f);
+            mapCamera.zoom = 1.0f;
+            chunkToolMessage = "Camera centered at origin.";
             break;
         case 1:
+            if (placedChunks.length > 0) {
+                const bounds = getChunkPreviewBounds(placedChunks, chunkGeometries);
+                mapCamera.target = Vector2(
+                    bounds.horizontal.x + bounds.horizontal.width * 0.5f,
+                    bounds.horizontal.y + bounds.horizontal.height * 0.5f
+                );
+                const maxSpan = max(bounds.horizontal.width, bounds.horizontal.height);
+                mapCamera.zoom = maxSpan > 0.0f ? min(4.0f, 300.0f / maxSpan) : 1.0f;
+                chunkToolMessage = "Camera zoomed to fit all chunks.";
+            } else {
+                chunkToolMessage = "No chunks to fit.";
+            }
             break;
         case 2:
+            placedChunks.length = 0;
+            chunkGeometries.length = 0;
+            chunkToolMessage = "All chunks cleared.";
             break;
         default:
             break;
@@ -1494,10 +1918,34 @@ private void applyToolbarAction(
     case 5:
         switch (optionIndex) {
         case 0:
+            if (editingChunkIndex >= 0 && editingChunkIndex < cast(int)chunkGeometries.length) {
+                selectedPointIndices.length = 0;
+                selectedPointIndices.reserve(chunkGeometries[editingChunkIndex].points.length);
+                foreach (i; 0 .. chunkGeometries[editingChunkIndex].points.length) {
+                    selectedPointIndices ~= cast(int)i;
+                }
+                selectedFaceIndices.length = 0;
+                selectedWallIndices.length = 0;
+                chunkEditorMessage = to!string(TextFormat("Selected %d point(s).", cast(int)selectedPointIndices.length));
+            }
             break;
         case 1:
+            clearChunkEditorSelection(selectedPointIndices, selectedFaceIndices, selectedWallIndices);
+            chunkEditorMessage = "All selections cleared.";
             break;
         case 2:
+            if (editingChunkIndex >= 0 && editingChunkIndex < cast(int)chunkGeometries.length) {
+                int issueCount = 0;
+                foreach (face; chunkGeometries[editingChunkIndex].faces) {
+                    const polygonPoints = getFacePolygonPoints(chunkGeometries[editingChunkIndex], face);
+                    if (polygonPoints.length < 3 || polygonHasSelfIntersection(polygonPoints)) {
+                        issueCount++;
+                    }
+                }
+                chunkEditorMessage = issueCount > 0
+                    ? to!string(TextFormat("Warning: %d invalid face(s) found.", issueCount))
+                    : "Geometry validation passed: all faces are valid.";
+            }
             break;
         default:
             break;
@@ -1506,10 +1954,10 @@ private void applyToolbarAction(
     case 6:
         switch (optionIndex) {
         case 0:
+            showAboutDialog = true;
             break;
         case 1:
-            break;
-        case 2:
+            showShortcutsDialog = true;
             break;
         default:
             break;
@@ -1671,6 +2119,8 @@ int main()
     int batchFaceCeilingValue = 16;
     string chunkEditorMessage = "Point mode: click to place snapped points inside the chunk bounds.";
     bool shouldExit = false;
+    bool showAboutDialog = false;
+    bool showShortcutsDialog = false;
 
     while (!shouldExit) {
         const frameTime = GetFrameTime();
@@ -1678,6 +2128,8 @@ int main()
         const inspectorRect = getInspectorRect();
         const chunkPreviewPanelRect = getChunkPreviewPanelRect(canvasRect);
         const chunkPreviewContentRect = getChunkPreviewContentRect(chunkPreviewPanelRect);
+        const chunkPreviewBounds = getChunkPreviewBounds(placedChunks, chunkGeometries);
+        const chunkPreviewMaxDistance = getChunkPreviewMaxDistance(chunkPreviewBounds);
         const wantsWindowClose = WindowShouldClose();
         if (wantsWindowClose && !IsKeyPressed(KeyboardKey.KEY_ESCAPE)) {
             break;
@@ -1709,6 +2161,22 @@ int main()
         if (hasActiveMap && selectedToolbarIndex < 0 && appScreen == AppScreen.map) {
             const mouseInsideCanvas = CheckCollisionPointRec(mousePosition, canvasRect);
             const wheelMove = mouseInsideCanvas ? GetMouseWheelMove() : 0.0f;
+
+            if (!isDraggingChunk) {
+                if (IsKeyPressed(KeyboardKey.KEY_D)) {
+                    setMapChunkTool(activeChunkTool, ChunkTool.draw, chunkToolMessage, clickSound);
+                } else if (IsKeyPressed(KeyboardKey.KEY_M)) {
+                    setMapChunkTool(activeChunkTool, ChunkTool.move, chunkToolMessage, clickSound);
+                } else if (IsKeyPressed(KeyboardKey.KEY_DELETE) || IsKeyPressed(KeyboardKey.KEY_BACKSPACE)) {
+                    setMapChunkTool(activeChunkTool, ChunkTool.deleteChunk, chunkToolMessage, clickSound);
+                } else if (IsKeyPressed(KeyboardKey.KEY_E)) {
+                    setMapChunkTool(activeChunkTool, ChunkTool.edit, chunkToolMessage, clickSound);
+                } else if (IsKeyPressed(KeyboardKey.KEY_ESCAPE) && selectedChunkIndex >= 0) {
+                    selectedChunkIndex = -1;
+                    chunkToolMessage = "Chunk selection cleared.";
+                    PlaySound(touchSound);
+                }
+            }
 
             if (wheelMove != 0.0f) {
                 mapCamera.zoom += wheelMove * 0.125f;
@@ -1788,7 +2256,7 @@ int main()
                         chunkEditorCamera.zoom = 2.0f;
                         chunkPreviewYaw = 0.75f;
                         chunkPreviewPitch = 0.55f;
-                        chunkPreviewDistance = max(cast(float)editChunk.width * mapGridCellSize, cast(float)editChunk.height * mapGridCellSize) * 1.8f + 64.0f;
+                        chunkPreviewDistance = getChunkPreviewDefaultDistance(chunkPreviewBounds);
                         PlaySound(connectSound);
                     } else {
                         selectedChunkIndex = -1;
@@ -1869,6 +2337,81 @@ int main()
             const mouseInsidePreview = CheckCollisionPointRec(mousePosition, chunkPreviewContentRect);
             const mouseInsideCanvas = CheckCollisionPointRec(mousePosition, canvasRect) && !mouseInsidePreview;
             const wheelMove = mouseInsideCanvas ? GetMouseWheelMove() : 0.0f;
+            const controlDown = IsKeyDown(KeyboardKey.KEY_LEFT_CONTROL) || IsKeyDown(KeyboardKey.KEY_RIGHT_CONTROL);
+            const hasSelection = selectedPointIndices.length > 0 || selectedFaceIndices.length > 0 || selectedWallIndices.length > 0;
+            const keyboardShortcutsEnabled = !faceFloorEditMode && !faceCeilingEditMode && !batchFaceFloorEditMode && !batchFaceCeilingEditMode;
+
+            if (keyboardShortcutsEnabled) {
+                if (IsKeyPressed(KeyboardKey.KEY_ONE)) {
+                    setChunkEditorTool(chunkEditorTool, ChunkEditorTool.placePoint, chunkEditorMessage, clickSound);
+                } else if (IsKeyPressed(KeyboardKey.KEY_TWO)) {
+                    setChunkEditorTool(chunkEditorTool, ChunkEditorTool.selectPoint, chunkEditorMessage, clickSound);
+                } else if (IsKeyPressed(KeyboardKey.KEY_TAB)) {
+                    const nextTool = chunkEditorTool == ChunkEditorTool.placePoint
+                        ? ChunkEditorTool.selectPoint
+                        : ChunkEditorTool.placePoint;
+                    setChunkEditorTool(chunkEditorTool, nextTool, chunkEditorMessage, clickSound);
+                } else if (IsKeyPressed(KeyboardKey.KEY_F)) {
+                    createSelectedFace(
+                        chunkGeometries[editingChunkIndex],
+                        selectedPointIndices,
+                        selectedFaceIndices,
+                        chunkEditorMessage,
+                        connectSound,
+                        touchSound
+                    );
+                } else if (IsKeyPressed(KeyboardKey.KEY_W)) {
+                    createSelectedWall(
+                        chunkGeometries[editingChunkIndex],
+                        selectedPointIndices,
+                        selectedFaceIndices,
+                        selectedWallIndices,
+                        chunkEditorMessage,
+                        connectSound,
+                        touchSound
+                    );
+                } else if (IsKeyPressed(KeyboardKey.KEY_DELETE) || IsKeyPressed(KeyboardKey.KEY_BACKSPACE)) {
+                    deleteCurrentChunkEditorSelection(
+                        chunkGeometries[editingChunkIndex],
+                        selectedPointIndices,
+                        selectedFaceIndices,
+                        selectedWallIndices,
+                        chunkEditorMessage,
+                        deleteSound,
+                        touchSound
+                    );
+                } else if (controlDown && IsKeyPressed(KeyboardKey.KEY_A)) {
+                    selectAllChunkPoints(
+                        chunkGeometries[editingChunkIndex],
+                        selectedPointIndices,
+                        selectedFaceIndices,
+                        selectedWallIndices,
+                        chunkEditorMessage,
+                        clickSound,
+                        touchSound
+                    );
+                } else if (IsKeyPressed(KeyboardKey.KEY_ESCAPE)) {
+                    if (hasSelection || isBoxSelecting) {
+                        clearChunkEditorSelection(selectedPointIndices, selectedFaceIndices, selectedWallIndices);
+                        isBoxSelecting = false;
+                        chunkEditorMessage = "Selection cleared.";
+                        PlaySound(touchSound);
+                    } else {
+                        returnToMapFromChunkEditor(
+                            appScreen,
+                            selectedChunkIndex,
+                            editingChunkIndex,
+                            selectedPointIndices,
+                            selectedFaceIndices,
+                            selectedWallIndices,
+                            isBoxSelecting,
+                            chunkEditorMessage,
+                            chunkToolMessage,
+                            clickSound
+                        );
+                    }
+                }
+            }
 
             if (wheelMove != 0.0f) {
                 chunkEditorCamera.zoom += wheelMove * 0.125f;
@@ -1881,7 +2424,7 @@ int main()
                 if (previewWheel != 0.0f) {
                     chunkPreviewDistance -= previewWheel * 16.0f;
                     if (chunkPreviewDistance < 48.0f) chunkPreviewDistance = 48.0f;
-                    if (chunkPreviewDistance > 640.0f) chunkPreviewDistance = 640.0f;
+                    if (chunkPreviewDistance > chunkPreviewMaxDistance) chunkPreviewDistance = chunkPreviewMaxDistance;
                 }
 
                 if (IsMouseButtonDown(MOUSE_RIGHT_BUTTON)) {
@@ -2160,8 +2703,8 @@ int main()
                     chunkEditorTool
                 );
 
-                const previewCamera = getChunkPreviewCamera(editingChunk, chunkPreviewYaw, chunkPreviewPitch, chunkPreviewDistance);
-                renderChunkPreview3D(chunkPreviewTexture, previewCamera, editingChunk, chunkGeometries[editingChunkIndex], ditherImage);
+                const previewCamera = getChunkPreviewCamera(chunkPreviewBounds, chunkPreviewYaw, chunkPreviewPitch, chunkPreviewDistance);
+                renderChunkPreview3D(chunkPreviewTexture, previewCamera, placedChunks, chunkGeometries, editingChunkIndex, chunkPreviewBounds, ditherImage);
                 GuiPanel(chunkPreviewPanelRect, "3D Preview");
                 DrawTexturePro(
                     chunkPreviewTexture.texture,
@@ -2181,14 +2724,10 @@ int main()
                     const selectToolBounds = Rectangle(inspectorRect.x + 140.0f, inspectorRect.y + 68.0f, 116.0f, 28.0f);
 
                     if (GuiButton(placePointToolBounds, "Place Point")) {
-                        chunkEditorTool = ChunkEditorTool.placePoint;
-                        chunkEditorMessage = "Point mode: click to place snapped points inside the chunk bounds.";
-                        PlaySound(clickSound);
+                        setChunkEditorTool(chunkEditorTool, ChunkEditorTool.placePoint, chunkEditorMessage, clickSound);
                     }
                     if (GuiButton(selectToolBounds, "Select")) {
-                        chunkEditorTool = ChunkEditorTool.selectPoint;
-                        chunkEditorMessage = "Select mode: click points or face centers.";
-                        PlaySound(clickSound);
+                        setChunkEditorTool(chunkEditorTool, ChunkEditorTool.selectPoint, chunkEditorMessage, clickSound);
                     }
 
                     if (chunkEditorTool == ChunkEditorTool.placePoint) {
@@ -2198,117 +2737,58 @@ int main()
                     }
 
                     if (GuiButton(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 104.0f, 116.0f, 28.0f), "Create Face")) {
-                        if (selectedPointIndices.length >= 3) {
-                            const orderedPointIndices = sortFacePointIndices(chunkGeometries[editingChunkIndex], selectedPointIndices);
-                            if (faceOverlapsExistingFaces(chunkGeometries[editingChunkIndex], orderedPointIndices)) {
-                                chunkEditorMessage = "Face is invalid: it overlaps another face or crosses itself.";
-                                PlaySound(touchSound);
-                            } else {
-                                chunkGeometries[editingChunkIndex].faces ~= ChunkFace(orderedPointIndices.dup, 0, 16, 0, true, false);
-                                selectedFaceIndices = [cast(int)chunkGeometries[editingChunkIndex].faces.length - 1];
-                                selectedPointIndices.length = 0;
-                                chunkEditorMessage = to!string(TextFormat("Created face %d.", selectedFaceIndices[0] + 1));
-                                PlaySound(connectSound);
-                            }
-                        } else {
-                            chunkEditorMessage = "Select at least 3 points to create a face.";
-                            PlaySound(touchSound);
-                        }
+                        createSelectedFace(
+                            chunkGeometries[editingChunkIndex],
+                            selectedPointIndices,
+                            selectedFaceIndices,
+                            chunkEditorMessage,
+                            connectSound,
+                            touchSound
+                        );
                     }
 
                     if (GuiButton(Rectangle(inspectorRect.x + 140.0f, inspectorRect.y + 104.0f, 116.0f, 28.0f), "Delete Face")) {
-                        if (selectedFaceIndices.length > 0) {
-                            auto faceIndicesToDelete = selectedFaceIndices.dup;
-                            faceIndicesToDelete.sort!((a, b) => a > b);
-                            foreach (faceIndex; faceIndicesToDelete) {
-                                if (faceIndex >= 0 && faceIndex < cast(int)chunkGeometries[editingChunkIndex].faces.length) {
-                                    removeFaceAt(chunkGeometries[editingChunkIndex], faceIndex);
-                                }
-                            }
-                            chunkEditorMessage = to!string(TextFormat("Deleted %d face(s).", cast(int)faceIndicesToDelete.length));
-                            selectedFaceIndices.length = 0;
-                            PlaySound(deleteSound);
-                        } else {
-                            chunkEditorMessage = "Select one or more faces to delete.";
-                            PlaySound(touchSound);
-                        }
+                        deleteSelectedFaces(
+                            chunkGeometries[editingChunkIndex],
+                            selectedFaceIndices,
+                            chunkEditorMessage,
+                            deleteSound,
+                            touchSound
+                        );
                     }
 
                     if (GuiButton(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 140.0f, 116.0f, 28.0f), "Create Wall")) {
-                        if (selectedPointIndices.length == 2) {
-                            const pointAIndex = selectedPointIndices[0];
-                            const pointBIndex = selectedPointIndices[1];
-                            if (pointAIndex == pointBIndex) {
-                                chunkEditorMessage = "Pick two different points to create a wall.";
-                                PlaySound(touchSound);
-                            } else if (chunkGeometryHasWall(chunkGeometries[editingChunkIndex], pointAIndex, pointBIndex)) {
-                                chunkEditorMessage = "That wall already exists.";
-                                PlaySound(touchSound);
-                            } else {
-                                chunkGeometries[editingChunkIndex].walls ~= ChunkWall(pointAIndex, pointBIndex, 0, 16, 0);
-                                selectedWallIndices = [cast(int)chunkGeometries[editingChunkIndex].walls.length - 1];
-                                selectedPointIndices.length = 0;
-                                selectedFaceIndices.length = 0;
-                                chunkEditorMessage = to!string(TextFormat("Created wall %d.", selectedWallIndices[0] + 1));
-                                PlaySound(connectSound);
-                            }
-                        } else {
-                            chunkEditorMessage = "Select exactly 2 points to create a wall.";
-                            PlaySound(touchSound);
-                        }
+                        createSelectedWall(
+                            chunkGeometries[editingChunkIndex],
+                            selectedPointIndices,
+                            selectedFaceIndices,
+                            selectedWallIndices,
+                            chunkEditorMessage,
+                            connectSound,
+                            touchSound
+                        );
                     }
 
                     if (GuiButton(Rectangle(inspectorRect.x + 140.0f, inspectorRect.y + 140.0f, 116.0f, 28.0f), "Delete Wall")) {
-                        if (selectedWallIndices.length > 0) {
-                            auto wallIndicesToDelete = selectedWallIndices.dup;
-                            wallIndicesToDelete.sort!((a, b) => a > b);
-                            foreach (wallIndex; wallIndicesToDelete) {
-                                if (wallIndex >= 0 && wallIndex < cast(int)chunkGeometries[editingChunkIndex].walls.length) {
-                                    removeWallAt(chunkGeometries[editingChunkIndex], wallIndex);
-                                }
-                            }
-                            chunkEditorMessage = to!string(TextFormat("Deleted %d wall(s).", cast(int)wallIndicesToDelete.length));
-                            selectedWallIndices.length = 0;
-                            PlaySound(deleteSound);
-                        } else {
-                            chunkEditorMessage = "Select one or more walls to delete.";
-                            PlaySound(touchSound);
-                        }
+                        deleteSelectedWalls(
+                            chunkGeometries[editingChunkIndex],
+                            selectedWallIndices,
+                            chunkEditorMessage,
+                            deleteSound,
+                            touchSound
+                        );
                     }
 
                     if (GuiButton(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 176.0f, 116.0f, 28.0f), "Delete Point")) {
-                        if (selectedPointIndices.length > 0) {
-                            bool pointUsedByWall = false;
-                            foreach (selectedPointIndex; selectedPointIndices) {
-                                if (pointIsUsedByWall(chunkGeometries[editingChunkIndex], selectedPointIndex)) {
-                                    pointUsedByWall = true;
-                                    break;
-                                }
-                            }
-
-                            if (selectedPointsUsedByUnselectedFaces(chunkGeometries[editingChunkIndex], selectedPointIndices, selectedFaceIndices) || pointUsedByWall) {
-                                chunkEditorMessage = pointUsedByWall
-                                    ? "Delete linked walls first before removing those points."
-                                    : "Delete linked faces first, or select those faces too.";
-                                PlaySound(touchSound);
-                            } else {
-                                auto pointIndicesToDelete = selectedPointIndices.dup;
-                                pointIndicesToDelete.sort!((a, b) => a > b);
-                                foreach (pointIndex; pointIndicesToDelete) {
-                                    if (pointIndex >= 0 && pointIndex < cast(int)chunkGeometries[editingChunkIndex].points.length) {
-                                        removePointAt(chunkGeometries[editingChunkIndex], pointIndex);
-                                    }
-                                }
-                                selectedPointIndices.length = 0;
-                                selectedFaceIndices.length = 0;
-                                selectedWallIndices.length = 0;
-                                chunkEditorMessage = to!string(TextFormat("Deleted %d point(s).", cast(int)pointIndicesToDelete.length));
-                                PlaySound(deleteSound);
-                            }
-                        } else {
-                            chunkEditorMessage = "Select one or more points to delete.";
-                            PlaySound(touchSound);
-                        }
+                        deleteSelectedPoints(
+                            chunkGeometries[editingChunkIndex],
+                            selectedPointIndices,
+                            selectedFaceIndices,
+                            selectedWallIndices,
+                            chunkEditorMessage,
+                            deleteSound,
+                            touchSound
+                        );
                     }
 
                     if (GuiButton(Rectangle(inspectorRect.x + 140.0f, inspectorRect.y + 176.0f, 116.0f, 28.0f), "Back to Map")) {
@@ -2319,6 +2799,8 @@ int main()
                     GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 246.0f, inspectorRect.width - 32.0f, 24.0f), TextFormat("Bounds: %d x %d   Zoom: %d%%", editingChunk.width * cast(int)mapGridCellSize, editingChunk.height * cast(int)mapGridCellSize, cast(int)(chunkEditorCamera.zoom * 100.0f)));
                     GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 270.0f, inspectorRect.width - 32.0f, 24.0f), TextFormat("P:%d  F:%d  W:%d", cast(int)chunkGeometries[editingChunkIndex].points.length, cast(int)chunkGeometries[editingChunkIndex].faces.length, cast(int)chunkGeometries[editingChunkIndex].walls.length));
                     GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 294.0f, inspectorRect.width - 32.0f, 24.0f), TextFormat("Sel P:%d  F:%d  W:%d", cast(int)selectedPointIndices.length, cast(int)selectedFaceIndices.length, cast(int)selectedWallIndices.length));
+                    GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 448.0f, inspectorRect.width - 32.0f, 24.0f), "Shortcuts: 1 point, 2 select, Tab toggle, F face, W wall");
+                    GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 472.0f, inspectorRect.width - 32.0f, 24.0f), "Delete removes selection, Ctrl+A selects all points, Esc clears or exits");
 
                     if (selectedFaceIndices.length != 1) {
                         faceFloorEditMode = false;
@@ -2514,19 +2996,22 @@ int main()
                             const decreaseCeiling = GuiButton(Rectangle(inspectorRect.x + 118.0f, inspectorRect.y + 362.0f, 24.0f, 24.0f), "-");
                             const increaseCeiling = GuiButton(Rectangle(inspectorRect.x + 146.0f, inspectorRect.y + 362.0f, 24.0f, 24.0f), "+");
                             if (face.sameFloorAndCeiling) GuiEnable();
-                            if (decreaseCeiling) {
-                                if (face.ceilingHeight > face.floorHeight) {
-                                    face.ceilingHeight--;
+                            
+                            if (!face.sameFloorAndCeiling) {
+                                if (decreaseCeiling) {
+                                    if (face.ceilingHeight > face.floorHeight) {
+                                        face.ceilingHeight--;
+                                        faceCeilingInputValue = face.ceilingHeight;
+                                        PlaySound(clickSound);
+                                    } else {
+                                        PlaySound(touchSound);
+                                    }
+                                }
+                                if (increaseCeiling) {
+                                    face.ceilingHeight++;
                                     faceCeilingInputValue = face.ceilingHeight;
                                     PlaySound(clickSound);
-                                } else {
-                                    PlaySound(touchSound);
                                 }
-                            }
-                            if (increaseCeiling) {
-                                face.ceilingHeight++;
-                                faceCeilingInputValue = face.ceilingHeight;
-                                PlaySound(clickSound);
                             }
                             GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 392.0f, 96.0f, 24.0f), TextFormat("Palette: %d", face.paletteIndex));
                             if (GuiButton(Rectangle(inspectorRect.x + 114.0f, inspectorRect.y + 390.0f, 24.0f, 24.0f), "-")) {
@@ -2592,16 +3077,18 @@ int main()
                     }
 
                     if (shouldReturnToMap) {
-                        appScreen = AppScreen.map;
-                        selectedChunkIndex = editingChunkIndex;
-                        selectedPointIndices.length = 0;
-                        selectedFaceIndices.length = 0;
-                        selectedWallIndices.length = 0;
-                        isBoxSelecting = false;
-                        editingChunkIndex = -1;
-                        chunkEditorMessage = "Returned to the map canvas.";
-                        chunkToolMessage = "Edit mode: click a chunk to inspect it.";
-                        PlaySound(clickSound);
+                        returnToMapFromChunkEditor(
+                            appScreen,
+                            selectedChunkIndex,
+                            editingChunkIndex,
+                            selectedPointIndices,
+                            selectedFaceIndices,
+                            selectedWallIndices,
+                            isBoxSelecting,
+                            chunkEditorMessage,
+                            chunkToolMessage,
+                            clickSound
+                        );
                     }
                 }
             }
@@ -2685,13 +3172,134 @@ int main()
                         showChunkBounds,
                         placedChunks,
                         chunkGeometries,
-                        shouldExit
+                        shouldExit,
+                        mapCamera,
+                        chunkEditorCamera,
+                        selectedPointIndices,
+                        selectedFaceIndices,
+                        selectedWallIndices,
+                        chunkToolMessage,
+                        chunkEditorMessage,
+                        showAboutDialog,
+                        showShortcutsDialog
                     );
                     PlaySound(clickSound);
                     if (!shouldExit) {
                         selectedToolbarIndex = -1;
                     }
                 }
+            }
+        }
+
+        if (showAboutDialog) {
+            const dialogWidth = 480.0f;
+            const dialogHeight = 300.0f;
+            const dialogX = (GetScreenWidth() - dialogWidth) * 0.5f;
+            const dialogY = (GetScreenHeight() - dialogHeight) * 0.5f;
+            const dialogRect = Rectangle(dialogX, dialogY, dialogWidth, dialogHeight);
+
+            DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), Color(0, 0, 0, 180));
+            GuiPanel(dialogRect, "About Leafway");
+
+            float textY = dialogY + 40.0f;
+            const textX = dialogX + 20.0f;
+            const textWidth = dialogWidth - 40.0f;
+
+            DrawText("Leafway Editor", cast(int)textX, cast(int)textY, 24, Colors.WHITE);
+            textY += 40.0f;
+
+            DrawText("Version: 0.1.0 (Prototype)", cast(int)textX, cast(int)textY, 16, Colors.LIGHTGRAY);
+            textY += 30.0f;
+
+            DrawText("A simple 3D DOOM-style map maker for Playdate", cast(int)textX, cast(int)textY, 14, Colors.LIGHTGRAY);
+            textY += 25.0f;
+            DrawText("made with raylib in D.", cast(int)textX, cast(int)textY, 14, Colors.LIGHTGRAY);
+            textY += 35.0f;
+
+            DrawText("Created by Dylan (2025)", cast(int)textX, cast(int)textY, 14, Colors.LIGHTGRAY);
+            textY += 35.0f;
+
+            if (GuiButton(Rectangle(dialogX + dialogWidth - 100.0f, dialogY + dialogHeight - 50.0f, 80.0f, 35.0f), "Close")) {
+                showAboutDialog = false;
+                PlaySound(clickSound);
+            }
+        }
+
+        if (showShortcutsDialog) {
+            const dialogWidth = 520.0f;
+            const dialogHeight = 440.0f;
+            const dialogX = (GetScreenWidth() - dialogWidth) * 0.5f;
+            const dialogY = (GetScreenHeight() - dialogHeight) * 0.5f;
+            const dialogRect = Rectangle(dialogX, dialogY, dialogWidth, dialogHeight);
+
+            DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), Color(0, 0, 0, 180));
+            GuiPanel(dialogRect, "Keyboard Shortcuts");
+
+            float textY = dialogY + 40.0f;
+            const textX = dialogX + 20.0f;
+            const colWidth = 250.0f;
+
+            DrawText("Map Screen:", cast(int)textX, cast(int)textY, 16, Colors.WHITE);
+            textY += 25.0f;
+
+            DrawText("D", cast(int)textX, cast(int)textY, 14, Colors.LIGHTGRAY);
+            DrawText("Draw/Place Chunk", cast(int)(textX + 120.0f), cast(int)textY, 14, Colors.LIGHTGRAY);
+            textY += 20.0f;
+
+            DrawText("M", cast(int)textX, cast(int)textY, 14, Colors.LIGHTGRAY);
+            DrawText("Move Chunk", cast(int)(textX + 120.0f), cast(int)textY, 14, Colors.LIGHTGRAY);
+            textY += 20.0f;
+
+            DrawText("E", cast(int)textX, cast(int)textY, 14, Colors.LIGHTGRAY);
+            DrawText("Edit Chunk", cast(int)(textX + 120.0f), cast(int)textY, 14, Colors.LIGHTGRAY);
+            textY += 20.0f;
+
+            DrawText("Delete/Backspace", cast(int)textX, cast(int)textY, 14, Colors.LIGHTGRAY);
+            DrawText("Delete Chunk", cast(int)(textX + 120.0f), cast(int)textY, 14, Colors.LIGHTGRAY);
+            textY += 20.0f;
+
+            DrawText("Escape", cast(int)textX, cast(int)textY, 14, Colors.LIGHTGRAY);
+            DrawText("Clear Selection", cast(int)(textX + 120.0f), cast(int)textY, 14, Colors.LIGHTGRAY);
+            textY += 30.0f;
+
+            DrawText("Chunk Editor:", cast(int)textX, cast(int)textY, 16, Colors.WHITE);
+            textY += 25.0f;
+
+            DrawText("1", cast(int)textX, cast(int)textY, 14, Colors.LIGHTGRAY);
+            DrawText("Place Point Mode", cast(int)(textX + 120.0f), cast(int)textY, 14, Colors.LIGHTGRAY);
+            textY += 20.0f;
+
+            DrawText("2", cast(int)textX, cast(int)textY, 14, Colors.LIGHTGRAY);
+            DrawText("Select Mode", cast(int)(textX + 120.0f), cast(int)textY, 14, Colors.LIGHTGRAY);
+            textY += 20.0f;
+
+            DrawText("Tab", cast(int)textX, cast(int)textY, 14, Colors.LIGHTGRAY);
+            DrawText("Toggle Mode", cast(int)(textX + 120.0f), cast(int)textY, 14, Colors.LIGHTGRAY);
+            textY += 20.0f;
+
+            DrawText("F", cast(int)textX, cast(int)textY, 14, Colors.LIGHTGRAY);
+            DrawText("Create Face", cast(int)(textX + 120.0f), cast(int)textY, 14, Colors.LIGHTGRAY);
+            textY += 20.0f;
+
+            DrawText("W", cast(int)textX, cast(int)textY, 14, Colors.LIGHTGRAY);
+            DrawText("Create Wall", cast(int)(textX + 120.0f), cast(int)textY, 14, Colors.LIGHTGRAY);
+            textY += 20.0f;
+
+            DrawText("Delete/Backspace", cast(int)textX, cast(int)textY, 14, Colors.LIGHTGRAY);
+            DrawText("Delete Selection", cast(int)(textX + 120.0f), cast(int)textY, 14, Colors.LIGHTGRAY);
+            textY += 20.0f;
+
+            DrawText("Ctrl+A", cast(int)textX, cast(int)textY, 14, Colors.LIGHTGRAY);
+            DrawText("Select All Points", cast(int)(textX + 120.0f), cast(int)textY, 14, Colors.LIGHTGRAY);
+            textY += 20.0f;
+
+            DrawText("Escape", cast(int)textX, cast(int)textY, 14, Colors.LIGHTGRAY);
+            DrawText("Clear/Exit", cast(int)(textX + 120.0f), cast(int)textY, 14, Colors.LIGHTGRAY);
+            textY += 20.0f;
+
+            if (GuiButton(Rectangle(dialogX + dialogWidth - 100.0f, dialogY + dialogHeight - 50.0f, 80.0f, 35.0f), "Close")) {
+                showShortcutsDialog = false;
+                PlaySound(clickSound);
             }
         }
 
