@@ -30,10 +30,10 @@ p 8
 . . . continue til the end of the walls
 f y0 y1 (y0 and y1 are the floor and ceiling values for the wall)
 
-o x y z i (contains the position and the data index of the object)
-. . . continue til the end of the objects
-e x z i (contains the position and the data index of the entity)
-e x z i (contains the position and the data index of the entity)
+o x y z rx ry rz sx sy sz i (contains the position, rotation, scale, and the data index of the object)
+. . . continue til the end of the objects   
+e x z rx ry rz sx sy sz i (contains the position, rotation, scale, and the data index of the entity)
+e x z rx ry rz sx sy sz i (contains the position, rotation, scale, and the data index of the entity)
 . . . continue til the end of the entities
 ok
 ```
