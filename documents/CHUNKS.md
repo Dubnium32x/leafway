@@ -76,3 +76,68 @@ It's also worth noting that the chunk data takes inspiration from the original D
 
 ## Faces
 In the editor, faces are the sector-style polygons built from chunk points. They carry the same `y0/y1` idea as sectors: a floor value and a ceiling value. Walls also carry `y0/y1`, but they are edge primitives instead of area primitives.
+
+# Update
+## The .lm File
+```
+lm [MAP_NAME]
+[CHUNK_AMOUNT]
+chunk chunkMinX chunkMinZ chunkMaxX chunkMaxZ
+i [MAX_POINTS] (this is the sector wall and object point amount)
+s x z
+s x z
+s x z
+p 12
+f y0 y1 (y0 and y1 are the floor and ceiling values for the sector)
+
+s x z
+s x z
+s x z
+p 12
+f y0 y1 (y0 and y1 are the floor and ceiling values for the sector)
+
+w x z
+w x z
+p 4
+f y0 y1 (y0 and y1 are the floor and ceiling values for the wall)
+
+w x z
+w x z
+p 8
+f y0 y1 (y0 and y1 are the floor and ceiling values for the wall)
+
+o x y z rx ry rz sx sy sz i (contains the position, rotation, scale, and the data index of the object)
+o x y z rx ry rz sx sy sz i (contains the position, rotation, scale, and the data index of the object)
+. . . continue til the end of the objects
+e x z rx ry rz sx sy sz i (contains the position, rotation, scale, and the data index of the entity)
+e x z rx ry rz sx sy sz i (contains the position, rotation, scale, and the data index of the entity)
+. . . continue til the end of the entities
+ok
+chunk chunkMinX chunkMinZ chunkMaxX chunkMaxZ
+i [MAX_POINTS] (this is the sector wall and object point amount)
+s x z
+s x z
+s x z
+p 12
+f y0 y1 (y0 and y1 are the floor and ceiling values for the sector)
+
+w x z
+w x z
+p 4
+f y0 y1 (y0 and y1 are the floor and ceiling values for the wall)
+
+w x z
+w x z
+p 8
+f y0 y1 (y0 and y1 are the floor and ceiling values for the wall)
+
+o x y z rx ry rz sx sy sz i (contains the position, rotation, scale, and the data index of the object)
+o x y z rx ry rz sx sy sz i (contains the position, rotation, scale, and the data index of the object)
+. . . continue til the end of the objects
+e x z rx ry rz sx sy sz i (contains the position, rotation, scale, and the data index of the entity)
+e x z rx ry rz sx sy sz i (contains the position, rotation, scale, and the data index of the entity)
+. . . continue til the end of the entities
+ok
+```
+
+This new file type pretty much replaces the old `.leaf` file. The main difference is that all chunks are stored in a single file rather than each file being a separate chunk. This makes it easier to manage and load the map data, as well as reducing the number of files needed for a map. The `.lm` file also includes the map name and the amount of chunks in the map, which can be used for loading and managing the map data.

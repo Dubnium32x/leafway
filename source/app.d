@@ -13,9 +13,10 @@ import std.stdio;
 import std.conv : to;
 import std.string;
 import std.string : strip;
-import std.process : execute;
+import std.process : execute, executeShell;
 import core.stdc.math : fmod, floor, atan2, sin, cos, fabs;
 import std.file;
+import std.path : baseName, buildPath;
 import std.array;
 import std.exception;
 import std.algorithm;
@@ -1163,7 +1164,8 @@ private void renderChunkPreview3D(
             }
 
             foreach (entity; chunkGeometries[index].entities) {
-                const entityPos = Vector3(chunkOffset.x + entity.x, 0.0f, chunkOffset.y + entity.z);
+                const floorY = getFloorHeightAtXZ(chunkGeometries[index], entity.x, entity.z);
+                const entityPos = Vector3(chunkOffset.x + entity.x, floorY, chunkOffset.y + entity.z);
                 Color entityColor;
                 final switch (entity.type) {
                     case EntityType.player:       entityColor = Colors.GREEN; break;
@@ -1617,7 +1619,7 @@ private string[] getMenuOptions(int toolbarIndex)
 {
     switch (toolbarIndex) {
     case 0:
-        return ["New Map", "Open Map", "Quit"];
+        return ["New Map", "Open Map", "Save Map", "Quit"];
     case 1:
         return [];
     case 2:
@@ -2058,6 +2060,27 @@ private bool selectedEntityIndicesContain(int[] selectedEntityIndices, int entit
     return false;
 }
 
+// Returns the floor height of the face containing (x, z), or 0 if none found.
+private float getFloorHeightAtXZ(ChunkGeometry geometry, float x, float z)
+{
+    const pt = Vector2(x, z);
+    foreach (face; geometry.faces) {
+        const poly = getFacePolygonPoints(geometry, face);
+        if (poly.length < 3) continue;
+        // Ray-casting point-in-polygon test
+        bool inside = false;
+        for (int i = 0, j = cast(int)poly.length - 1; i < cast(int)poly.length; j = i++) {
+            const xi = poly[i].x, yi = poly[i].y;
+            const xj = poly[j].x, yj = poly[j].y;
+            if (((yi > pt.y) != (yj > pt.y)) &&
+                (pt.x < (xj - xi) * (pt.y - yi) / (yj - yi) + xi))
+                inside = !inside;
+        }
+        if (inside) return cast(float)face.floorHeight;
+    }
+    return 0.0f;
+}
+
 private int findEntityAtWorldPosition(ChunkGeometry geometry, Vector2 worldPosition, float threshold)
 {
     foreach_reverse (entityIndex, entity; geometry.entities) {
@@ -2186,6 +2209,7 @@ private void applyToolbarAction(
     ref string chunkEditorMessage,
     ref bool showAboutDialog,
     ref bool showShortcutsDialog,
+    ref bool pendingSaveMapDialog,
 )
 {
     switch (toolbarIndex) {
@@ -2203,6 +2227,9 @@ private void applyToolbarAction(
             pendingOpenMapDialog = true;
             break;
         case 2:
+            pendingSaveMapDialog = true;
+            break;
+        case 3:
             shouldExit = true;
             break;
         default:
@@ -2368,6 +2395,383 @@ private void drawPanningBackground(Texture2D waterTexture, Vector2 offset)
     DrawRectangleGradientV(0, 0, cast(int)screenWidth, cast(int)screenHeight, Fade(Colors.SKYBLUE, 0.12f), Fade(Colors.DARKBLUE, 0.35f));
 }
 
+private string serializeChunkToLeaf(MapChunk chunk, ChunkGeometry geometry)
+{
+    import std.array : appender;
+    import std.format : format;
+
+    auto buf = appender!string();
+
+    // i [MAX_POINTS]
+    buf ~= format("i %d\n", cast(int)geometry.points.length);
+
+    // Faces: s x z ... p palette  f y0 y1
+    foreach (face; geometry.faces) {
+        foreach (pointIndex; face.pointIndices) {
+            if (pointIndex < 0 || pointIndex >= cast(int)geometry.points.length) continue;
+            const pt = geometry.points[pointIndex];
+            buf ~= format("s %d %d\n", pt.x, pt.z);
+        }
+        buf ~= format("p %d\n", face.paletteIndex);
+        buf ~= format("f %d %d\n", face.floorHeight, face.ceilingHeight);
+        buf ~= "\n";
+    }
+
+    // Walls: w startX startZ  w endX endZ  p palette  f y0 y1
+    foreach (wall; geometry.walls) {
+        if (wall.startPointIndex < 0 || wall.startPointIndex >= cast(int)geometry.points.length) continue;
+        if (wall.endPointIndex   < 0 || wall.endPointIndex   >= cast(int)geometry.points.length) continue;
+        const startPt = geometry.points[wall.startPointIndex];
+        const endPt   = geometry.points[wall.endPointIndex];
+        buf ~= format("w %d %d\n", startPt.x, startPt.z);
+        buf ~= format("w %d %d\n", endPt.x,   endPt.z);
+        buf ~= format("p %d\n", wall.paletteIndex);
+        buf ~= format("f %d %d\n", wall.floorHeight, wall.ceilingHeight);
+        buf ~= "\n";
+    }
+
+    // Auto-walls: computed from faces with autoWallFromHeightDifference
+    for (int faceIndex = 0; faceIndex < cast(int)geometry.faces.length; faceIndex++) {
+        const face = geometry.faces[faceIndex];
+        if (!face.autoWallFromHeightDifference || face.pointIndices.length < 2) continue;
+
+        for (int ei = 0; ei < cast(int)face.pointIndices.length; ei++) {
+            const pointAIndex = face.pointIndices[ei];
+            const pointBIndex = face.pointIndices[(ei + 1) % cast(int)face.pointIndices.length];
+            if (pointAIndex < 0 || pointAIndex >= cast(int)geometry.points.length) continue;
+            if (pointBIndex < 0 || pointBIndex >= cast(int)geometry.points.length) continue;
+            const ptA = geometry.points[pointAIndex];
+            const ptB = geometry.points[pointBIndex];
+
+            const adjFaceIndex = findAdjacentFaceForEdge(geometry, faceIndex, pointAIndex, pointBIndex);
+
+            if (adjFaceIndex < 0) {
+                // Exterior edge - full wall
+                buf ~= format("w %d %d\n", ptA.x, ptA.z);
+                buf ~= format("w %d %d\n", ptB.x, ptB.z);
+                buf ~= format("p %d\n", face.paletteIndex);
+                buf ~= format("f %d %d\n", face.floorHeight, face.ceilingHeight);
+                buf ~= "\n";
+            } else {
+                const adjFace = geometry.faces[adjFaceIndex];
+                // Dedup: only emit once per shared edge
+                if (adjFace.autoWallFromHeightDifference && adjFaceIndex < faceIndex) continue;
+
+                // Floor step wall
+                const lowerFloor = face.floorHeight < adjFace.floorHeight ? face.floorHeight : adjFace.floorHeight;
+                const upperFloor = face.floorHeight > adjFace.floorHeight ? face.floorHeight : adjFace.floorHeight;
+                if (upperFloor > lowerFloor) {
+                    buf ~= format("w %d %d\n", ptA.x, ptA.z);
+                    buf ~= format("w %d %d\n", ptB.x, ptB.z);
+                    buf ~= format("p %d\n", face.paletteIndex);
+                    buf ~= format("f %d %d\n", lowerFloor, upperFloor);
+                    buf ~= "\n";
+                }
+
+                // Ceiling step wall
+                const lowerCeiling = face.ceilingHeight < adjFace.ceilingHeight ? face.ceilingHeight : adjFace.ceilingHeight;
+                const upperCeiling = face.ceilingHeight > adjFace.ceilingHeight ? face.ceilingHeight : adjFace.ceilingHeight;
+                if (upperCeiling > lowerCeiling) {
+                    buf ~= format("w %d %d\n", ptA.x, ptA.z);
+                    buf ~= format("w %d %d\n", ptB.x, ptB.z);
+                    buf ~= format("p %d\n", face.paletteIndex);
+                    buf ~= format("f %d %d\n", lowerCeiling, upperCeiling);
+                    buf ~= "\n";
+                }
+            }
+        }
+    }
+
+    // Objects: o x y z rx ry rz sx sy sz i
+    foreach (obj; geometry.objects) {
+        buf ~= format("o %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %d\n",
+            obj.x, obj.y, obj.z,
+            obj.rotationX, obj.rotationY, obj.rotationZ,
+            obj.scaleX, obj.scaleY, obj.scaleZ,
+            cast(int)obj.type);
+    }
+
+    // Entities: e x z rx ry rz sx sy sz i
+    foreach (entity; geometry.entities) {
+        buf ~= format("e %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %d\n",
+            entity.x, entity.z,
+            entity.rotationX, entity.rotationY, entity.rotationZ,
+            entity.scaleX, entity.scaleY, entity.scaleZ,
+            cast(int)entity.type);
+    }
+
+    buf ~= "ok\n";
+    return buf.data;
+}
+
+private void saveAllChunks(MapChunk[] placedChunks, ChunkGeometry[] chunkGeometries, string saveDir, string mapName, ref string message)
+{
+    import std.path : buildPath;
+
+    const baseName = mapName.length > 0 ? mapName : "chunk";
+    int saved = 0;
+    for (int i = 0; i < cast(int)placedChunks.length && i < cast(int)chunkGeometries.length; i++) {
+        const filename = buildPath(saveDir, format("%s_%d.leaf", baseName, i));
+        const content = serializeChunkToLeaf(placedChunks[i], chunkGeometries[i]);
+        std.file.write(filename, content);
+        saved++;
+    }
+    message = format("Saved %d chunk(s) to: %s", saved, saveDir);
+}
+
+// Parses the leaf section for one chunk (lines starting after the "chunk ..." header).
+// Advances lineIdx past the "ok" terminator. Returns false if parsing fails.
+private bool parseLeafSection(string[] lines, ref int lineIdx, ref ChunkGeometry geometry)
+{
+    geometry = ChunkGeometry.init;
+
+    // Skip 'i' (point count) header line
+    if (lineIdx < lines.length && lines[lineIdx].strip().startsWith("i ")) lineIdx++;
+
+    int[string] pointMap; // "x_z" -> index into geometry.points
+
+    auto getOrAddPoint = (int x, int z) {
+        const key = format("%d_%d", x, z);
+        if (const p = key in pointMap) return *p;
+        const idx = cast(int)geometry.points.length;
+        geometry.points ~= ChunkPoint(x, z);
+        pointMap[key] = idx;
+        return idx;
+    };
+
+    while (lineIdx < lines.length) {
+        const line = lines[lineIdx].strip();
+
+        if (line == "ok") { lineIdx++; return true; }
+
+        // Face: one or more 's x z' tokens
+        if (line.length >= 2 && line[0] == 's') {
+            ChunkFace face;
+            while (lineIdx < lines.length) {
+                const fl = lines[lineIdx].strip();
+                if (fl.length >= 2 && fl[0] == 's') {
+                    const parts = fl[2..$].split(' ');
+                    if (parts.length >= 2) {
+                        try { face.pointIndices ~= getOrAddPoint(parts[0].to!int, parts[1].to!int); }
+                        catch (Exception) {}
+                    }
+                    lineIdx++;
+                } else break;
+            }
+            if (lineIdx < lines.length) {
+                const fl = lines[lineIdx].strip();
+                if (fl.length >= 2 && fl[0] == 'p') {
+                    try { face.paletteIndex = fl[2..$].to!int; } catch (Exception) {}
+                    lineIdx++;
+                }
+            }
+            if (lineIdx < lines.length) {
+                const fl = lines[lineIdx].strip();
+                if (fl.length >= 2 && fl[0] == 'f') {
+                    const parts = fl[2..$].split(' ');
+                    if (parts.length >= 2) {
+                        try { face.floorHeight = parts[0].to!int; face.ceilingHeight = parts[1].to!int; }
+                        catch (Exception) {}
+                    }
+                    lineIdx++;
+                }
+            }
+            if (lineIdx < lines.length && lines[lineIdx].strip() == "") lineIdx++;
+            geometry.faces ~= face;
+            continue;
+        }
+
+        // Wall: 'w x z' start, 'w x z' end
+        if (line.length >= 2 && line[0] == 'w') {
+            ChunkWall wall;
+            {
+                const parts = line[2..$].split(' ');
+                if (parts.length >= 2) {
+                    try { wall.startPointIndex = getOrAddPoint(parts[0].to!int, parts[1].to!int); }
+                    catch (Exception) {}
+                }
+                lineIdx++;
+            }
+            if (lineIdx < lines.length) {
+                const fl = lines[lineIdx].strip();
+                if (fl.length >= 2 && fl[0] == 'w') {
+                    const parts = fl[2..$].split(' ');
+                    if (parts.length >= 2) {
+                        try { wall.endPointIndex = getOrAddPoint(parts[0].to!int, parts[1].to!int); }
+                        catch (Exception) {}
+                    }
+                    lineIdx++;
+                }
+            }
+            if (lineIdx < lines.length) {
+                const fl = lines[lineIdx].strip();
+                if (fl.length >= 2 && fl[0] == 'p') {
+                    try { wall.paletteIndex = fl[2..$].to!int; } catch (Exception) {}
+                    lineIdx++;
+                }
+            }
+            if (lineIdx < lines.length) {
+                const fl = lines[lineIdx].strip();
+                if (fl.length >= 2 && fl[0] == 'f') {
+                    const parts = fl[2..$].split(' ');
+                    if (parts.length >= 2) {
+                        try { wall.floorHeight = parts[0].to!int; wall.ceilingHeight = parts[1].to!int; }
+                        catch (Exception) {}
+                    }
+                    lineIdx++;
+                }
+            }
+            if (lineIdx < lines.length && lines[lineIdx].strip() == "") lineIdx++;
+            geometry.walls ~= wall;
+            continue;
+        }
+
+        // Object: o x y z rx ry rz sx sy sz type
+        if (line.length >= 2 && line[0] == 'o') {
+            const parts = line[2..$].split(' ');
+            if (parts.length >= 10) {
+                ChunkObject obj;
+                try {
+                    obj.x = parts[0].to!float; obj.y = parts[1].to!float; obj.z = parts[2].to!float;
+                    obj.rotationX = parts[3].to!float; obj.rotationY = parts[4].to!float; obj.rotationZ = parts[5].to!float;
+                    obj.scaleX = parts[6].to!float; obj.scaleY = parts[7].to!float; obj.scaleZ = parts[8].to!float;
+                    obj.type = cast(ObjectType)parts[9].to!int;
+                    geometry.objects ~= obj;
+                } catch (Exception) {}
+            }
+            lineIdx++;
+            continue;
+        }
+
+        // Entity: e x z rx ry rz sx sy sz type
+        if (line.length >= 2 && line[0] == 'e') {
+            const parts = line[2..$].split(' ');
+            if (parts.length >= 9) {
+                ChunkEntity entity;
+                try {
+                    entity.x = parts[0].to!float; entity.z = parts[1].to!float;
+                    entity.rotationX = parts[2].to!float; entity.rotationY = parts[3].to!float; entity.rotationZ = parts[4].to!float;
+                    entity.scaleX = parts[5].to!float; entity.scaleY = parts[6].to!float; entity.scaleZ = parts[7].to!float;
+                    entity.type = cast(EntityType)parts[8].to!int;
+                    geometry.entities ~= entity;
+                } catch (Exception) {}
+            }
+            lineIdx++;
+            continue;
+        }
+
+        lineIdx++; // skip unknown/blank lines
+    }
+    return false;
+}
+
+private string serializeMapToLm(MapChunk[] placedChunks, ChunkGeometry[] chunkGeometries, string mapName)
+{
+    auto buf = appender!string();
+    buf ~= format("lm %s\n", mapName.length > 0 ? mapName : "Untitled");
+    const count = cast(int)(placedChunks.length < chunkGeometries.length ? placedChunks.length : chunkGeometries.length);
+    buf ~= format("%d\n", count);
+    for (int i = 0; i < count; i++) {
+        const chunk = placedChunks[i];
+        buf ~= format("chunk %d %d %d %d\n", chunk.column, chunk.row, chunk.width, chunk.height);
+        buf ~= serializeChunkToLeaf(placedChunks[i], chunkGeometries[i]);
+    }
+    return buf.data;
+}
+
+private bool loadMapFromLm(string content, ref MapChunk[] placedChunks, ref ChunkGeometry[] chunkGeometries, ref string mapName)
+{
+    auto lines = content.lineSplitter().array;
+    int lineIdx = 0;
+
+    if (lineIdx >= lines.length) return false;
+    const firstLine = lines[lineIdx++].strip();
+    if (firstLine.length < 3 || firstLine[0 .. 3] != "lm ") return false;
+    mapName = firstLine[3 .. $].idup;
+
+    if (lineIdx >= lines.length) return false;
+    int numChunks;
+    try { numChunks = lines[lineIdx++].strip().to!int; } catch (Exception) { return false; }
+
+    placedChunks.length = 0;
+    chunkGeometries.length = 0;
+
+    for (int ci = 0; ci < numChunks; ci++) {
+        if (lineIdx >= lines.length) return false;
+        const chunkLine = lines[lineIdx++].strip();
+        if (!chunkLine.startsWith("chunk ")) return false;
+        const chunkParts = chunkLine[6 .. $].split(' ');
+        if (chunkParts.length < 4) return false;
+        int col, row, w, h;
+        try {
+            col = chunkParts[0].to!int; row = chunkParts[1].to!int;
+            w   = chunkParts[2].to!int; h   = chunkParts[3].to!int;
+        } catch (Exception) { return false; }
+
+        ChunkGeometry geometry;
+        if (!parseLeafSection(lines, lineIdx, geometry)) return false;
+
+        placedChunks   ~= MapChunk(col, row, w, h);
+        chunkGeometries ~= geometry;
+    }
+    return true;
+}
+
+private string saveMapDirectoryDialog()
+{
+    version (Windows) {
+        const result = execute([
+            "powershell",
+            "-NoProfile",
+            "-STA",
+            "-Command",
+            "Add-Type -AssemblyName System.Windows.Forms; " ~
+            "$dialog = New-Object System.Windows.Forms.FolderBrowserDialog; " ~
+            "$dialog.Description = 'Choose a folder to save .leaf chunk files'; " ~
+            "$dialog.ShowNewFolderButton = $true; " ~
+            "if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $dialog.SelectedPath }"
+        ]);
+        if (result.status != 0) return "";
+        return result.output.strip().idup;
+    } else version (linux) {
+        const result = executeShell(
+            "zenity --file-selection --directory --title='Choose Folder to Save Leaf Files' --filename=./ 2>/dev/null"
+        );
+        if (result.status != 0) return "";
+        return result.output.strip().idup;
+    } else {
+        return "";
+    }
+}
+
+private string saveMapLmFileDialog()
+{
+    version (Windows) {
+        const result = execute([
+            "powershell", "-NoProfile", "-STA", "-Command",
+            "Add-Type -AssemblyName System.Windows.Forms; " ~
+            "$dialog = New-Object System.Windows.Forms.SaveFileDialog; " ~
+            "$dialog.Title = 'Save Leafway Map'; " ~
+            "$dialog.DefaultExt = 'lm'; " ~
+            "$dialog.Filter = 'Leafway Map (*.lm)|*.lm|All Files (*.*)|*.*'; " ~
+            "if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $dialog.FileName }"
+        ]);
+        if (result.status != 0) return "";
+        return result.output.strip().idup;
+    } else version (linux) {
+        const result = executeShell(
+            "zenity --file-selection --save --confirm-overwrite " ~
+            "--title='Save Leafway Map' --filename=./Untitled.lm " ~
+            "'--file-filter=Leafway Map | *.lm' " ~
+            "'--file-filter=All Files | *' 2>/dev/null"
+        );
+        if (result.status != 0) return "";
+        return result.output.strip().idup;
+    } else {
+        return "";
+    }
+}
+
 private string openMapFileDialog()
 {
     version (Windows) {
@@ -2380,7 +2784,7 @@ private string openMapFileDialog()
             "$dialog = New-Object System.Windows.Forms.OpenFileDialog; " ~
             "$dialog.Title = 'Open Map'; " ~
             "$dialog.InitialDirectory = (Get-Location).Path; " ~
-            "$dialog.Filter = 'Leafway Maps (*.leafway;*.json;*.map)|*.leafway;*.json;*.map|All Files (*.*)|*.*'; " ~
+            "$dialog.Filter = 'Leafway Map (*.lm)|*.lm|All Files (*.*)|*.*'; " ~
             "if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $dialog.FileName }"
         ]);
 
@@ -2390,14 +2794,11 @@ private string openMapFileDialog()
 
         return result.output.strip().idup;
     } else version (linux) {
-        const result = execute([
-            "zenity",
-            "--file-selection",
-            "--title=Open Map",
-            "--filename=./",
-            "--file-filter=Leafway Maps | *.leafway *.json *.map",
-            "--file-filter=All Files | *"
-        ]);
+        const result = executeShell(
+            "zenity --file-selection --title='Open Map' --filename=./ " ~
+            "'--file-filter=Leafway Map | *.lm' " ~
+            "'--file-filter=All Files | *' 2>/dev/null"
+        );
 
         if (result.status != 0) {
             return "";
@@ -2452,6 +2853,10 @@ int main()
     bool hasActiveMap = false;
     AppScreen appScreen = AppScreen.map;
     bool pendingOpenMapDialog = false;
+    bool pendingSaveMapDialog = false;
+    char[128] mapNameBuf = 0;
+    mapNameBuf[0 .. "Untitled".length] = "Untitled";
+    bool mapNameEditMode = false;
     bool showGrid = true;
     bool showInspector = true;
     bool showChunkBounds = false;
@@ -2531,14 +2936,52 @@ int main()
 
             const chosenMap = openMapFileDialog();
             if (chosenMap.length > 0) {
-                selectedMapPath = chosenMap;
                 hasActiveMap = true;
                 appScreen = AppScreen.map;
                 placedChunks.length = 0;
                 chunkGeometries.length = 0;
                 selectedChunkIndex = -1;
                 editingChunkIndex = -1;
+                if (chosenMap.endsWith(".lm")) {
+                    string loadedName;
+                    const loadedContent = cast(string)std.file.read(chosenMap);
+                    if (loadMapFromLm(loadedContent, placedChunks, chunkGeometries, loadedName)) {
+                        selectedMapPath = chosenMap;
+                        mapNameBuf[] = 0;
+                        const nameLen = loadedName.length < mapNameBuf.length - 1 ? loadedName.length : mapNameBuf.length - 1;
+                        mapNameBuf[0 .. nameLen] = loadedName[0 .. nameLen];
+                        chunkToolMessage = format("Loaded %d chunk(s) from: %s", placedChunks.length, chosenMap);
+                    } else {
+                        chunkToolMessage = "Failed to load .lm file.";
+                        hasActiveMap = false;
+                    }
+                } else {
+                    selectedMapPath = chosenMap;
+                }
                 PlaySound(connectSound);
+            }
+        }
+
+        if (pendingSaveMapDialog) {
+            pendingSaveMapDialog = false;
+            if (placedChunks.length == 0) {
+                chunkToolMessage = "No chunks to save.";
+            } else {
+                const savePath = saveMapLmFileDialog();
+                if (savePath.length > 0) {
+                    // Derive map name from the chosen filename (strip dir + .lm)
+                    string derivedName = baseName(savePath);
+                    if (derivedName.endsWith(".lm"))
+                        derivedName = derivedName[0 .. $ - 3];
+                    mapNameBuf[] = 0;
+                    const nameLen = derivedName.length < mapNameBuf.length - 1 ? derivedName.length : mapNameBuf.length - 1;
+                    mapNameBuf[0 .. nameLen] = derivedName[0 .. nameLen];
+
+                    const lmContent = serializeMapToLm(placedChunks, chunkGeometries, derivedName);
+                    std.file.write(savePath, lmContent);
+                    chunkToolMessage = format("Saved map to: %s", savePath);
+                    PlaySound(connectSound);
+                }
             }
         }
 
@@ -3180,8 +3623,10 @@ int main()
                 GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 216.0f, inspectorRect.width - 32.0f, 24.0f), TextFormat("Chunks: %d", cast(int)placedChunks.length));
                 GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 242.0f, inspectorRect.width - 32.0f, 24.0f), TextFormat("Zoom: %d%%", cast(int)(mapCamera.zoom * 100.0f)));
                 GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 268.0f, inspectorRect.width - 32.0f, 24.0f), TextFormat("Camera: %d, %d", cast(int)mapCamera.target.x, cast(int)mapCamera.target.y));
-                GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 300.0f, inspectorRect.width - 32.0f, 24.0f), "Current Map:");
-                GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 326.0f, inspectorRect.width - 32.0f, 40.0f), selectedMapPath.ptr);
+                GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 300.0f, inspectorRect.width - 32.0f, 24.0f), "Map Name:");
+                if (GuiTextBox(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 326.0f, inspectorRect.width - 32.0f, 28.0f), mapNameBuf.ptr, cast(int)mapNameBuf.length - 1, mapNameEditMode)) {
+                    mapNameEditMode = !mapNameEditMode;
+                }
 
                 if (selectedChunkIndex >= 0 && selectedChunkIndex < cast(int)placedChunks.length) {
                     const selectedChunk = placedChunks[selectedChunkIndex];
@@ -3286,7 +3731,7 @@ int main()
 
                     BeginScissorMode(cast(int)contentAreaRect.x, cast(int)contentAreaRect.y, cast(int)contentAreaRect.width, cast(int)contentAreaRect.height);
 
-                    if (chunkEditorTool == ChunkEditorTool.placeEntity && selectedEntityIndices.length == 0) {
+                    if (chunkEditorTool == ChunkEditorTool.placeEntity) {
                         GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(0.0f), 100.0f, 24.0f), "Entity Type:");
                         int entityTypeValue = cast(int)currentEntityType;
                         if (GuiButton(Rectangle(inspectorRect.x + 108.0f, iy(-2.0f), 24.0f, 24.0f), "<")) {
@@ -3320,7 +3765,7 @@ int main()
                         }
                     }
 
-                    if (chunkEditorTool == ChunkEditorTool.placeObject && selectedObjectIndices.length == 0) {
+                    if (chunkEditorTool == ChunkEditorTool.placeObject) {
                         GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(0.0f), 100.0f, 24.0f), "Object Type:");
                         int objectTypeValue = cast(int)currentObjectType;
                         if (GuiButton(Rectangle(inspectorRect.x + 108.0f, iy(-2.0f), 24.0f, 24.0f), "<")) {
@@ -3767,6 +4212,60 @@ int main()
                         }
                     }
 
+                    if (selectedObjectIndices.length > 1) {
+                        GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(262.0f), inspectorRect.width - 32.0f, 24.0f), TextFormat("Apply To %d Objects", cast(int)selectedObjectIndices.length));
+                        GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(286.0f), 100.0f, 24.0f), "Height:");
+                        if (GuiButton(Rectangle(inspectorRect.x + 108.0f, iy(284.0f), 24.0f, 24.0f), "-")) {
+                            foreach (idx; selectedObjectIndices) {
+                                if (idx >= 0 && idx < cast(int)chunkGeometries[editingChunkIndex].objects.length)
+                                    chunkGeometries[editingChunkIndex].objects[idx].y -= 1.0f;
+                            }
+                            PlaySound(clickSound);
+                        }
+                        if (GuiButton(Rectangle(inspectorRect.x + 136.0f, iy(284.0f), 48.0f, 24.0f), "Reset")) {
+                            foreach (idx; selectedObjectIndices) {
+                                if (idx >= 0 && idx < cast(int)chunkGeometries[editingChunkIndex].objects.length)
+                                    chunkGeometries[editingChunkIndex].objects[idx].y = 0.0f;
+                            }
+                            PlaySound(clickSound);
+                        }
+                        if (GuiButton(Rectangle(inspectorRect.x + 188.0f, iy(284.0f), 24.0f, 24.0f), "+")) {
+                            foreach (idx; selectedObjectIndices) {
+                                if (idx >= 0 && idx < cast(int)chunkGeometries[editingChunkIndex].objects.length)
+                                    chunkGeometries[editingChunkIndex].objects[idx].y += 1.0f;
+                            }
+                            PlaySound(clickSound);
+                        }
+                        GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(314.0f), 100.0f, 24.0f), "Rotation:");
+                        if (GuiButton(Rectangle(inspectorRect.x + 108.0f, iy(312.0f), 24.0f, 24.0f), "<")) {
+                            foreach (idx; selectedObjectIndices) {
+                                if (idx >= 0 && idx < cast(int)chunkGeometries[editingChunkIndex].objects.length) {
+                                    chunkGeometries[editingChunkIndex].objects[idx].rotationY -= 15.0f;
+                                    if (chunkGeometries[editingChunkIndex].objects[idx].rotationY < 0.0f)
+                                        chunkGeometries[editingChunkIndex].objects[idx].rotationY += 360.0f;
+                                }
+                            }
+                            PlaySound(clickSound);
+                        }
+                        if (GuiButton(Rectangle(inspectorRect.x + 136.0f, iy(312.0f), 48.0f, 24.0f), "Reset")) {
+                            foreach (idx; selectedObjectIndices) {
+                                if (idx >= 0 && idx < cast(int)chunkGeometries[editingChunkIndex].objects.length)
+                                    chunkGeometries[editingChunkIndex].objects[idx].rotationY = 0.0f;
+                            }
+                            PlaySound(clickSound);
+                        }
+                        if (GuiButton(Rectangle(inspectorRect.x + 188.0f, iy(312.0f), 24.0f, 24.0f), ">")) {
+                            foreach (idx; selectedObjectIndices) {
+                                if (idx >= 0 && idx < cast(int)chunkGeometries[editingChunkIndex].objects.length) {
+                                    chunkGeometries[editingChunkIndex].objects[idx].rotationY += 15.0f;
+                                    if (chunkGeometries[editingChunkIndex].objects[idx].rotationY >= 360.0f)
+                                        chunkGeometries[editingChunkIndex].objects[idx].rotationY -= 360.0f;
+                                }
+                            }
+                            PlaySound(clickSound);
+                        }
+                    }
+
                     if (selectedObjectIndices.length == 1) {
                         const selectedObjectIndex = selectedObjectIndices[0];
                         if (selectedObjectIndex >= 0 && selectedObjectIndex < cast(int)chunkGeometries[editingChunkIndex].objects.length) {
@@ -3941,7 +4440,8 @@ int main()
                         chunkToolMessage,
                         chunkEditorMessage,
                         showAboutDialog,
-                        showShortcutsDialog
+                        showShortcutsDialog,
+                        pendingSaveMapDialog
                     );
                     PlaySound(clickSound);
                     if (!shouldExit) {
