@@ -14,7 +14,7 @@ import std.conv : to;
 import std.string;
 import std.string : strip;
 import std.process : execute, executeShell;
-import core.stdc.math : fmod, floor, atan2, sin, cos, fabs;
+import core.stdc.math : fmod, floor, atan2, sin, cos, fabs, sqrt, tan;
 import std.file;
 import std.path : baseName, buildPath;
 import std.array;
@@ -1100,6 +1100,161 @@ private void drawChunkAutoWallsPreview3D(ChunkGeometry geometry, int faceIndex, 
         const upperCeiling = face.ceilingHeight > adjacentFace.ceilingHeight ? face.ceilingHeight : adjacentFace.ceilingHeight;
         drawPreviewWallSegment(startPoint, endPoint, lowerCeiling, upperCeiling, wallColor);
     }
+}
+
+// Cast a picking ray from a pixel in the 3D preview render texture.
+private Ray getPreviewRay(Vector2 mouseInTexture, Camera3D camera, float texW, float texH)
+{
+    const ndcX = (2.0f * mouseInTexture.x / texW) - 1.0f;
+    const ndcY = 1.0f - (2.0f * mouseInTexture.y / texH);
+
+    // Build camera basis (forward, right, recalculated-up).
+    float fwX = camera.target.x - camera.position.x;
+    float fwY = camera.target.y - camera.position.y;
+    float fwZ = camera.target.z - camera.position.z;
+    const fwLen = cast(float)sqrt(cast(double)(fwX*fwX + fwY*fwY + fwZ*fwZ));
+    if (fwLen > 0.0f) { fwX /= fwLen; fwY /= fwLen; fwZ /= fwLen; }
+
+    float rx = fwY * camera.up.z - fwZ * camera.up.y;
+    float ry = fwZ * camera.up.x - fwX * camera.up.z;
+    float rz = fwX * camera.up.y - fwY * camera.up.x;
+    const rLen = cast(float)sqrt(cast(double)(rx*rx + ry*ry + rz*rz));
+    if (rLen > 0.0f) { rx /= rLen; ry /= rLen; rz /= rLen; }
+
+    // Up = right x forward (ensure orthogonality).
+    const ux = ry * fwZ - rz * fwY;
+    const uy = rz * fwX - rx * fwZ;
+    const uz = rx * fwY - ry * fwX;
+
+    const halfFovY = cast(float)tan(cast(double)(camera.fovy * 3.14159265f / 360.0f));
+    const aspect = texW / texH;
+
+    float dirX = fwX + ndcX * aspect * halfFovY * rx + ndcY * halfFovY * ux;
+    float dirY = fwY + ndcX * aspect * halfFovY * ry + ndcY * halfFovY * uy;
+    float dirZ = fwZ + ndcX * aspect * halfFovY * rz + ndcY * halfFovY * uz;
+    const dirLen = cast(float)sqrt(cast(double)(dirX*dirX + dirY*dirY + dirZ*dirZ));
+    if (dirLen > 0.0f) { dirX /= dirLen; dirY /= dirLen; dirZ /= dirLen; }
+
+    return Ray(camera.position, Vector3(dirX, dirY, dirZ));
+}
+
+// Möller–Trumbore ray-triangle intersection. Returns true and sets outT on hit.
+private bool rayHitsTriangle(Ray ray, Vector3 v0, Vector3 v1, Vector3 v2, ref float outT)
+{
+    const e1x = v1.x - v0.x; const e1y = v1.y - v0.y; const e1z = v1.z - v0.z;
+    const e2x = v2.x - v0.x; const e2y = v2.y - v0.y; const e2z = v2.z - v0.z;
+    const hx = ray.direction.y * e2z - ray.direction.z * e2y;
+    const hy = ray.direction.z * e2x - ray.direction.x * e2z;
+    const hz = ray.direction.x * e2y - ray.direction.y * e2x;
+    const det = e1x * hx + e1y * hy + e1z * hz;
+    if (det > -1e-6f && det < 1e-6f) return false;
+    const invDet = 1.0f / det;
+    const sx = ray.position.x - v0.x;
+    const sy = ray.position.y - v0.y;
+    const sz = ray.position.z - v0.z;
+    const u = (sx * hx + sy * hy + sz * hz) * invDet;
+    if (u < 0.0f || u > 1.0f) return false;
+    const qx = sy * e1z - sz * e1y;
+    const qy = sz * e1x - sx * e1z;
+    const qz = sx * e1y - sy * e1x;
+    const v = (ray.direction.x * qx + ray.direction.y * qy + ray.direction.z * qz) * invDet;
+    if (v < 0.0f || u + v > 1.0f) return false;
+    const t = (e2x * qx + e2y * qy + e2z * qz) * invDet;
+    if (t < 0.001f) return false;
+    outT = t;
+    return true;
+}
+
+// Ray vs a wall quad (two triangles). Returns true and sets outT to nearest hit.
+private bool rayHitsWallQuad(Ray ray, Vector3 v0, Vector3 v1, Vector3 v2, Vector3 v3, ref float outT)
+{
+    float t1 = float.infinity;
+    float t2 = float.infinity;
+    const hit1 = rayHitsTriangle(ray, v0, v1, v2, t1);
+    const hit2 = rayHitsTriangle(ray, v0, v2, v3, t2);
+    if (!hit1 && !hit2) return false;
+    outT = hit1 ? (hit2 ? (t1 < t2 ? t1 : t2) : t1) : t2;
+    return true;
+}
+
+// Find the nearest explicit (ChunkWall) in the editing chunk hit by a ray.
+// Returns the wall index, or -1. Sets outT to the hit distance.
+private int findExplicitWallHitByRay(ChunkGeometry geometry, Ray ray, Vector2 offset, ref float outT)
+{
+    int bestIndex = -1;
+    float bestT = float.infinity;
+
+    foreach (wallIndex, wall; geometry.walls) {
+        if (wall.startPointIndex < 0 || wall.startPointIndex >= cast(int)geometry.points.length) continue;
+        if (wall.endPointIndex   < 0 || wall.endPointIndex   >= cast(int)geometry.points.length) continue;
+
+        const sp = geometry.points[wall.startPointIndex];
+        const ep = geometry.points[wall.endPointIndex];
+        const v0 = Vector3(offset.x + sp.x, cast(float)wall.floorHeight,   offset.y + sp.z);
+        const v1 = Vector3(offset.x + ep.x, cast(float)wall.floorHeight,   offset.y + ep.z);
+        const v2 = Vector3(offset.x + ep.x, cast(float)wall.ceilingHeight, offset.y + ep.z);
+        const v3 = Vector3(offset.x + sp.x, cast(float)wall.ceilingHeight, offset.y + sp.z);
+
+        float t;
+        if (rayHitsWallQuad(ray, v0, v1, v2, v3, t) && t < bestT) {
+            bestT = t;
+            bestIndex = cast(int)wallIndex;
+        }
+    }
+
+    outT = bestT;
+    return bestIndex;
+}
+
+// Find the face (index) whose auto-wall is nearest to the ray. Returns -1 if none.
+private int findAutoWallFaceHitByRay(ChunkGeometry geometry, Ray ray, Vector2 offset, ref float outT)
+{
+    int bestFaceIndex = -1;
+    float bestT = float.infinity;
+
+    foreach (faceIndex, face; geometry.faces) {
+        if (!face.autoWallFromHeightDifference || face.pointIndices.length < 2) continue;
+
+        for (int ei = 0; ei < cast(int)face.pointIndices.length; ei++) {
+            const pointAIndex = face.pointIndices[ei];
+            const pointBIndex = face.pointIndices[(ei + 1) % cast(int)face.pointIndices.length];
+            if (pointAIndex < 0 || pointAIndex >= cast(int)geometry.points.length) continue;
+            if (pointBIndex < 0 || pointBIndex >= cast(int)geometry.points.length) continue;
+
+            const ptA = geometry.points[pointAIndex];
+            const ptB = geometry.points[pointBIndex];
+            const adjFaceIndex = findAdjacentFaceForEdge(geometry, cast(int)faceIndex, pointAIndex, pointBIndex);
+
+            void testQuad(int lowerY, int upperY) {
+                if (upperY <= lowerY) return;
+                const v0 = Vector3(offset.x + ptA.x, cast(float)lowerY, offset.y + ptA.z);
+                const v1 = Vector3(offset.x + ptB.x, cast(float)lowerY, offset.y + ptB.z);
+                const v2 = Vector3(offset.x + ptB.x, cast(float)upperY, offset.y + ptB.z);
+                const v3 = Vector3(offset.x + ptA.x, cast(float)upperY, offset.y + ptA.z);
+                float t;
+                if (rayHitsWallQuad(ray, v0, v1, v2, v3, t) && t < bestT) {
+                    bestT = t;
+                    bestFaceIndex = cast(int)faceIndex;
+                }
+            }
+
+            if (adjFaceIndex < 0) {
+                testQuad(face.floorHeight, face.ceilingHeight);
+            } else {
+                const adjFace = geometry.faces[adjFaceIndex];
+                if (adjFace.autoWallFromHeightDifference && adjFaceIndex < cast(int)faceIndex) continue;
+                const lowerFloor   = face.floorHeight   < adjFace.floorHeight   ? face.floorHeight   : adjFace.floorHeight;
+                const upperFloor   = face.floorHeight   > adjFace.floorHeight   ? face.floorHeight   : adjFace.floorHeight;
+                const lowerCeiling = face.ceilingHeight < adjFace.ceilingHeight ? face.ceilingHeight : adjFace.ceilingHeight;
+                const upperCeiling = face.ceilingHeight > adjFace.ceilingHeight ? face.ceilingHeight : adjFace.ceilingHeight;
+                testQuad(lowerFloor, upperFloor);
+                testQuad(lowerCeiling, upperCeiling);
+            }
+        }
+    }
+
+    outT = bestT;
+    return bestFaceIndex;
 }
 
 private Camera3D getChunkPreviewCamera(PreviewWorldBounds bounds, float yaw, float pitch, float distance)
@@ -2917,7 +3072,11 @@ int main()
         const inspectorRect = getInspectorRect();
         const chunkPreviewPanelRect = getChunkPreviewPanelRect(canvasRect);
         const chunkPreviewContentRect = getChunkPreviewContentRect(chunkPreviewPanelRect);
-        const chunkPreviewBounds = getChunkPreviewBounds(placedChunks, chunkGeometries);
+        const chunkPreviewBounds = (appScreen == AppScreen.chunkEditor && editingChunkIndex >= 0 && editingChunkIndex < cast(int)placedChunks.length)
+            ? getChunkPreviewBounds(
+                [placedChunks[editingChunkIndex]],
+                editingChunkIndex < cast(int)chunkGeometries.length ? [chunkGeometries[editingChunkIndex]] : cast(ChunkGeometry[])[])
+            : getChunkPreviewBounds(placedChunks, chunkGeometries);
         const chunkPreviewMaxDistance = getChunkPreviewMaxDistance(chunkPreviewBounds);
         const wantsWindowClose = WindowShouldClose();
         if (wantsWindowClose && !IsKeyPressed(KeyboardKey.KEY_ESCAPE)) {
@@ -3278,6 +3437,35 @@ int main()
                     chunkPreviewPitch -= mouseDelta.y * 0.01f;
                     if (chunkPreviewPitch < 0.20f) chunkPreviewPitch = 0.20f;
                     if (chunkPreviewPitch > 1.35f) chunkPreviewPitch = 1.35f;
+                }
+
+                if (IsMouseButtonPressed(MouseButton.MOUSE_BUTTON_LEFT)) {
+                    const pickCamera = getChunkPreviewCamera(chunkPreviewBounds, chunkPreviewYaw, chunkPreviewPitch, chunkPreviewDistance);
+                    const texMouseX = mousePosition.x - chunkPreviewContentRect.x;
+                    const texMouseY = mousePosition.y - chunkPreviewContentRect.y;
+                    const pickRay = getPreviewRay(Vector2(texMouseX, texMouseY), pickCamera, chunkPreviewTextureWidth, chunkPreviewTextureHeight);
+                    const editChunkOffset = getChunkWorldOffset(placedChunks[editingChunkIndex]);
+                    float wallT = float.infinity;
+                    float autoT = float.infinity;
+                    const pickedWallIndex = findExplicitWallHitByRay(chunkGeometries[editingChunkIndex], pickRay, editChunkOffset, wallT);
+                    const pickedAutoFaceIndex = findAutoWallFaceHitByRay(chunkGeometries[editingChunkIndex], pickRay, editChunkOffset, autoT);
+                    if (pickedWallIndex >= 0 && wallT <= autoT) {
+                        selectedWallIndices = [pickedWallIndex];
+                        selectedFaceIndices.length = 0;
+                        selectedPointIndices.length = 0;
+                        selectedEntityIndices.length = 0;
+                        selectedObjectIndices.length = 0;
+                        chunkEditorMessage = to!string(TextFormat("Selected wall %d from 3D view.", pickedWallIndex + 1));
+                        PlaySound(applySound);
+                    } else if (pickedAutoFaceIndex >= 0) {
+                        selectedFaceIndices = [pickedAutoFaceIndex];
+                        selectedWallIndices.length = 0;
+                        selectedPointIndices.length = 0;
+                        selectedEntityIndices.length = 0;
+                        selectedObjectIndices.length = 0;
+                        chunkEditorMessage = to!string(TextFormat("Auto-wall: selected parent face %d.", pickedAutoFaceIndex + 1));
+                        PlaySound(clickSound);
+                    }
                 }
             }
 
