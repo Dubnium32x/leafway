@@ -66,20 +66,31 @@ enum ChunkEditorTool {
 
 enum EntityType {
     player,
-    fish,
     npc,
+    fishCommon,
+    fishRare,
+    fishLegendary,
+    bird,
+    insect,
     treasureChest,
-    prop,
-    interactable,
+    festivalDecoration,
 }
 
 enum ObjectType {
-    crate,
-    barrel,
-    rock,
+    hut,
     tree,
-    decoration,
-    pickup,
+    rock,
+    crate,
+    chair,
+    table,
+    boat,
+    dock,
+    building,
+    buoy,
+    fishingNet,
+    coral,
+    underwaterRock,
+    festivalProp,
 }
 
 struct ChunkEntity {
@@ -1323,12 +1334,15 @@ private void renderChunkPreview3D(
                 const entityPos = Vector3(chunkOffset.x + entity.x, floorY, chunkOffset.y + entity.z);
                 Color entityColor;
                 final switch (entity.type) {
-                    case EntityType.player:       entityColor = Colors.GREEN; break;
-                    case EntityType.fish:         entityColor = Colors.SKYBLUE; break;
-                    case EntityType.npc:          entityColor = Colors.ORANGE; break;
-                    case EntityType.treasureChest: entityColor = Colors.GOLD; break;
-                    case EntityType.prop:         entityColor = Colors.BEIGE; break;
-                    case EntityType.interactable: entityColor = Colors.VIOLET; break;
+                    case EntityType.player:             entityColor = Colors.GREEN; break;
+                    case EntityType.npc:                entityColor = Colors.ORANGE; break;
+                    case EntityType.fishCommon:         entityColor = Colors.SKYBLUE; break;
+                    case EntityType.fishRare:           entityColor = Colors.BLUE; break;
+                    case EntityType.fishLegendary:      entityColor = Colors.GOLD; break;
+                    case EntityType.bird:               entityColor = Color(135, 206, 235, 255); break;
+                    case EntityType.insect:             entityColor = Color(100, 200, 50, 255); break;
+                    case EntityType.treasureChest:      entityColor = Colors.YELLOW; break;
+                    case EntityType.festivalDecoration: entityColor = Colors.VIOLET; break;
                 }
                 DrawCylinder(entityPos, 4.0f, 4.0f, 16.0f, 6, entityColor);
                 DrawCylinderWires(entityPos, 4.0f, 4.0f, 16.0f, 6, Fade(Colors.BLACK, 0.5f));
@@ -1345,12 +1359,20 @@ private void renderChunkPreview3D(
                 const objPos = Vector3(chunkOffset.x + obj.x, obj.y, chunkOffset.y + obj.z);
                 Color objColor;
                 final switch (obj.type) {
-                    case ObjectType.crate:      objColor = Color(139, 90, 43, 255); break;
-                    case ObjectType.barrel:     objColor = Color(101, 67, 33, 255); break;
-                    case ObjectType.rock:       objColor = Colors.GRAY; break;
-                    case ObjectType.tree:       objColor = Color(34, 85, 34, 255); break;
-                    case ObjectType.decoration: objColor = Colors.PINK; break;
-                    case ObjectType.pickup:     objColor = Colors.YELLOW; break;
+                    case ObjectType.hut:           objColor = Color(160, 120, 80, 255); break;
+                    case ObjectType.tree:          objColor = Color(34, 85, 34, 255); break;
+                    case ObjectType.rock:          objColor = Colors.GRAY; break;
+                    case ObjectType.crate:         objColor = Color(139, 90, 43, 255); break;
+                    case ObjectType.chair:         objColor = Color(180, 140, 90, 255); break;
+                    case ObjectType.table:         objColor = Color(200, 160, 100, 255); break;
+                    case ObjectType.boat:          objColor = Color(70, 130, 180, 255); break;
+                    case ObjectType.dock:          objColor = Color(101, 67, 33, 255); break;
+                    case ObjectType.building:      objColor = Color(180, 160, 120, 255); break;
+                    case ObjectType.buoy:          objColor = Colors.RED; break;
+                    case ObjectType.fishingNet:    objColor = Color(200, 200, 150, 255); break;
+                    case ObjectType.coral:         objColor = Color(255, 127, 80, 255); break;
+                    case ObjectType.underwaterRock:objColor = Color(100, 120, 140, 255); break;
+                    case ObjectType.festivalProp:  objColor = Colors.PINK; break;
                 }
                 DrawCube(objPos, 8.0f, 8.0f, 8.0f, objColor);
                 DrawCubeWiresV(objPos, Vector3(8.0f, 8.0f, 8.0f), Fade(Colors.BLACK, 0.5f));
@@ -1652,20 +1674,29 @@ private void drawChunkEditorCanvas(
         case EntityType.player:
             entityColor = Colors.GREEN;
             break;
-        case EntityType.fish:
-            entityColor = Colors.BLUE;
-            break;
         case EntityType.npc:
-            entityColor = Colors.PURPLE;
-            break;
-        case EntityType.treasureChest:
-            entityColor = Colors.GOLD;
-            break;
-        case EntityType.prop:
             entityColor = Colors.ORANGE;
             break;
-        case EntityType.interactable:
+        case EntityType.fishCommon:
             entityColor = Colors.SKYBLUE;
+            break;
+        case EntityType.fishRare:
+            entityColor = Colors.BLUE;
+            break;
+        case EntityType.fishLegendary:
+            entityColor = Colors.GOLD;
+            break;
+        case EntityType.bird:
+            entityColor = Color(135, 206, 235, 255);
+            break;
+        case EntityType.insect:
+            entityColor = Color(100, 200, 50, 255);
+            break;
+        case EntityType.treasureChest:
+            entityColor = Colors.YELLOW;
+            break;
+        case EntityType.festivalDecoration:
+            entityColor = Colors.VIOLET;
             break;
         }
         
@@ -1700,23 +1731,47 @@ private void drawChunkEditorCanvas(
         
         Color objectColor;
         final switch (obj.type) {
-        case ObjectType.crate:
-            objectColor = Colors.BROWN;
-            break;
-        case ObjectType.barrel:
-            objectColor = Color(139, 69, 19, 255); // Saddle brown
-            break;
-        case ObjectType.rock:
-            objectColor = Colors.GRAY;
+        case ObjectType.hut:
+            objectColor = Color(160, 120, 80, 255);
             break;
         case ObjectType.tree:
             objectColor = Color(34, 139, 34, 255); // Forest green
             break;
-        case ObjectType.decoration:
-            objectColor = Colors.PINK;
+        case ObjectType.rock:
+            objectColor = Colors.GRAY;
             break;
-        case ObjectType.pickup:
-            objectColor = Colors.YELLOW;
+        case ObjectType.crate:
+            objectColor = Colors.BROWN;
+            break;
+        case ObjectType.chair:
+            objectColor = Color(180, 140, 90, 255);
+            break;
+        case ObjectType.table:
+            objectColor = Color(200, 160, 100, 255);
+            break;
+        case ObjectType.boat:
+            objectColor = Color(70, 130, 180, 255); // Steel blue
+            break;
+        case ObjectType.dock:
+            objectColor = Color(101, 67, 33, 255);
+            break;
+        case ObjectType.building:
+            objectColor = Color(180, 160, 120, 255);
+            break;
+        case ObjectType.buoy:
+            objectColor = Colors.RED;
+            break;
+        case ObjectType.fishingNet:
+            objectColor = Color(200, 200, 150, 255);
+            break;
+        case ObjectType.coral:
+            objectColor = Color(255, 127, 80, 255); // Coral
+            break;
+        case ObjectType.underwaterRock:
+            objectColor = Color(100, 120, 140, 255);
+            break;
+        case ObjectType.festivalProp:
+            objectColor = Colors.PINK;
             break;
         }
         
@@ -2194,16 +2249,22 @@ private string getEntityTypeName(EntityType type)
     final switch (type) {
     case EntityType.player:
         return "Player";
-    case EntityType.fish:
-        return "Fish";
     case EntityType.npc:
         return "NPC";
+    case EntityType.fishCommon:
+        return "Fish (Common)";
+    case EntityType.fishRare:
+        return "Fish (Rare)";
+    case EntityType.fishLegendary:
+        return "Fish (Legendary)";
+    case EntityType.bird:
+        return "Bird";
+    case EntityType.insect:
+        return "Insect";
     case EntityType.treasureChest:
         return "Treasure Chest";
-    case EntityType.prop:
-        return "Prop";
-    case EntityType.interactable:
-        return "Interactable";
+    case EntityType.festivalDecoration:
+        return "Festival Decoration";
     }
 }
 
@@ -2278,18 +2339,34 @@ private void deleteSelectedEntities(
 private string getObjectTypeName(ObjectType type)
 {
     final switch (type) {
-    case ObjectType.crate:
-        return "Crate";
-    case ObjectType.barrel:
-        return "Barrel";
-    case ObjectType.rock:
-        return "Rock";
+    case ObjectType.hut:
+        return "Hut";
     case ObjectType.tree:
         return "Tree";
-    case ObjectType.decoration:
-        return "Decoration";
-    case ObjectType.pickup:
-        return "Pickup";
+    case ObjectType.rock:
+        return "Rock";
+    case ObjectType.crate:
+        return "Crate";
+    case ObjectType.chair:
+        return "Chair";
+    case ObjectType.table:
+        return "Table";
+    case ObjectType.boat:
+        return "Boat";
+    case ObjectType.dock:
+        return "Dock";
+    case ObjectType.building:
+        return "Building";
+    case ObjectType.buoy:
+        return "Buoy";
+    case ObjectType.fishingNet:
+        return "Fishing Net";
+    case ObjectType.coral:
+        return "Coral";
+    case ObjectType.underwaterRock:
+        return "Underwater Rock";
+    case ObjectType.festivalProp:
+        return "Festival Prop";
     }
 }
 
