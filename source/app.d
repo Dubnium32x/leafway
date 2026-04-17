@@ -42,6 +42,7 @@ struct MapChunk {
     int row;
     int width;
     int height;
+    int layer = 0;
 }
 
 enum ChunkTool {
@@ -278,7 +279,7 @@ private bool isChunkPlacementValid(MapChunk candidate, MapChunk[] placedChunks, 
             continue;
         }
 
-        if (chunksOverlap(candidate, chunk)) {
+        if (candidate.layer == chunk.layer && chunksOverlap(candidate, chunk)) {
             return false;
         }
     }
@@ -1414,6 +1415,7 @@ private void drawMapCanvas(
     bool isDraggingChunk,
     MapChunk previewChunk,
     bool previewPlacementValid,
+    int currentLayer,
 )
 {
     DrawRectangleRec(canvasRect, Fade(Colors.BLACK, 0.24f));
@@ -1466,20 +1468,23 @@ private void drawMapCanvas(
     foreach (index, chunk; placedChunks) {
         const chunkRect = getChunkRect(chunk, gridLayout);
         const isSelected = cast(int)index == selectedChunkIndex;
-        DrawRectangleRec(chunkRect, Fade(Colors.DARKBLUE, isSelected ? 0.60f : 0.42f));
+        const isActiveLayer = chunk.layer == currentLayer;
+        const dimFactor = isActiveLayer ? 1.0f : 0.28f;
+
+        DrawRectangleRec(chunkRect, Fade(Colors.DARKBLUE, (isSelected ? 0.60f : 0.42f) * dimFactor));
 
         if (index < chunkGeometries.length) {
             const chunkOffset = Vector2(chunkRect.x, chunkRect.y);
             foreach (faceIndex, face; chunkGeometries[index].faces) {
-                drawPaletteFace(chunkGeometries[index], face, ditherImage, isSelected ? 0.28f : 0.22f, chunkOffset);
+                drawPaletteFace(chunkGeometries[index], face, ditherImage, (isSelected ? 0.28f : 0.22f) * dimFactor, chunkOffset);
                 if (isSelected) {
-                    drawFilledFace(chunkGeometries[index], face, Fade(Colors.GOLD, 0.10f), chunkOffset);
+                    drawFilledFace(chunkGeometries[index], face, Fade(Colors.GOLD, 0.10f * dimFactor), chunkOffset);
                 }
 
                 const polygonPoints = getFacePolygonPoints(chunkGeometries[index], face, chunkOffset);
                 for (int pointIndex = 0; pointIndex < cast(int)polygonPoints.length; pointIndex++) {
                     const nextPointIndex = (pointIndex + 1) % cast(int)polygonPoints.length;
-                    DrawLineV(polygonPoints[pointIndex], polygonPoints[nextPointIndex], Fade(Colors.WHITE, 0.45f));
+                    DrawLineV(polygonPoints[pointIndex], polygonPoints[nextPointIndex], Fade(Colors.WHITE, 0.45f * dimFactor));
                 }
             }
 
@@ -1492,7 +1497,7 @@ private void drawMapCanvas(
                 DrawLineV(
                     Vector2(chunkOffset.x + startPoint.x, chunkOffset.y + startPoint.y),
                     Vector2(chunkOffset.x + endPoint.x, chunkOffset.y + endPoint.y),
-                    Fade(Colors.MAROON, 0.85f)
+                    Fade(Colors.MAROON, 0.85f * dimFactor)
                 );
             }
         }
@@ -1500,8 +1505,13 @@ private void drawMapCanvas(
         DrawRectangleLinesEx(
             chunkRect,
             isSelected ? 3.0f : (showChunkBounds ? 2.5f : 1.5f),
-            isSelected ? Fade(Colors.GOLD, 0.95f) : Fade(Colors.WHITE, 0.85f)
+            isSelected ? Fade(Colors.GOLD, 0.95f * dimFactor) : Fade(Colors.WHITE, 0.85f * dimFactor)
         );
+
+        // Layer label in the top-left corner of the chunk
+        const labelPos = Vector2(chunkRect.x + 4.0f / gridLayout.camera.zoom, chunkRect.y + 2.0f / gridLayout.camera.zoom);
+        const labelFontSize = 14.0f / gridLayout.camera.zoom;
+        DrawTextPro(GetFontDefault(), TextFormat("L%d", chunk.layer), labelPos, Vector2(0, 0), 0.0f, labelFontSize, labelFontSize / 10.0f, Fade(isActiveLayer ? Colors.RAYWHITE : Colors.GRAY, 0.85f * dimFactor));
     }
 
     if (isDraggingChunk) {
@@ -2905,7 +2915,7 @@ private string serializeMapToLm(MapChunk[] placedChunks, ChunkGeometry[] chunkGe
     buf ~= format("%d\n", count);
     for (int i = 0; i < count; i++) {
         const chunk = placedChunks[i];
-        buf ~= format("chunk %d %d %d %d\n", chunk.column, chunk.row, chunk.width, chunk.height);
+        buf ~= format("chunk %d %d %d %d %d\n", chunk.column, chunk.row, chunk.width, chunk.height, chunk.layer);
         buf ~= serializeChunkToLeaf(placedChunks[i], chunkGeometries[i]);
     }
     return buf.data;
@@ -2934,16 +2944,17 @@ private bool loadMapFromLm(string content, ref MapChunk[] placedChunks, ref Chun
         if (!chunkLine.startsWith("chunk ")) return false;
         const chunkParts = chunkLine[6 .. $].split(' ');
         if (chunkParts.length < 4) return false;
-        int col, row, w, h;
+        int col, row, w, h, layer;
         try {
             col = chunkParts[0].to!int; row = chunkParts[1].to!int;
             w   = chunkParts[2].to!int; h   = chunkParts[3].to!int;
+            layer = chunkParts.length >= 5 ? chunkParts[4].to!int : 0;
         } catch (Exception) { return false; }
 
         ChunkGeometry geometry;
         if (!parseLeafSection(lines, lineIdx, geometry)) return false;
 
-        placedChunks   ~= MapChunk(col, row, w, h);
+        placedChunks   ~= MapChunk(col, row, w, h, layer);
         chunkGeometries ~= geometry;
     }
     return true;
@@ -3042,6 +3053,73 @@ private string openMapFileDialog()
     }
 }
 
+private ChunkGeometry dupGeometry(const ChunkGeometry g)
+{
+    ChunkGeometry result;
+    result.points = g.points.dup;
+    result.walls = g.walls.dup;
+    result.entities = g.entities.dup;
+    result.objects = g.objects.dup;
+    result.faces.reserve(g.faces.length);
+    foreach (f; g.faces) {
+        result.faces ~= ChunkFace(f.pointIndices.dup, f.floorHeight, f.ceilingHeight, f.paletteIndex, f.autoWallFromHeightDifference, f.sameFloorAndCeiling);
+    }
+    return result;
+}
+
+struct MapSnapshot {
+    MapChunk[] chunks;
+    ChunkGeometry[] geometries;
+}
+
+private enum maxUndoDepth = 50;
+
+private void pushMapUndo(ref MapSnapshot[] stack, MapChunk[] chunks, ChunkGeometry[] geoms)
+{
+    MapSnapshot snap;
+    snap.chunks = chunks.dup;
+    snap.geometries.reserve(geoms.length);
+    foreach (g; geoms) snap.geometries ~= dupGeometry(g);
+    stack ~= snap;
+    if (stack.length > maxUndoDepth) stack = stack[$ - maxUndoDepth .. $];
+}
+
+private void pushChunkUndo(ref ChunkGeometry[] stack, ChunkGeometry geom)
+{
+    stack ~= dupGeometry(geom);
+    if (stack.length > maxUndoDepth) stack = stack[$ - maxUndoDepth .. $];
+}
+
+// Draw text word-wrapped inside bounds, matching raygui label style.
+private void drawWrappedLabel(Rectangle bounds, string text)
+{
+    enum int fontSize = 10;
+    enum int lineH    = 14;
+    const Color labelColor = Color(102, 102, 102, 255);
+    const int maxW = cast(int)bounds.width;
+
+    import std.string : split, toStringz;
+    const words = text.split(' ');
+    string curLine = "";
+    int y = cast(int)bounds.y;
+    const int bottomEdge = cast(int)(bounds.y + bounds.height);
+
+    foreach (word; words) {
+        const testLine = curLine.length > 0 ? curLine ~ " " ~ word : word;
+        if (MeasureText(toStringz(testLine), fontSize) > maxW && curLine.length > 0) {
+            DrawText(toStringz(curLine), cast(int)bounds.x, y, fontSize, labelColor);
+            y += lineH;
+            curLine = word;
+            if (y + lineH > bottomEdge) break;
+        } else {
+            curLine = testLine;
+        }
+    }
+    if (curLine.length > 0 && y < bottomEdge) {
+        DrawText(toStringz(curLine), cast(int)bounds.x, y, fontSize, labelColor);
+    }
+}
+
 int main()
 {
     SetExitKey(KeyboardKey.KEY_NULL); // Disable default exit key so ESC never closes the window
@@ -3109,6 +3187,11 @@ int main()
     MapChunk previewChunk = MapChunk(0, 0, 1, 1);
     MapChunk interactionStartChunk = MapChunk(0, 0, 1, 1);
     bool previewPlacementValid = true;
+    int currentLayer = 0;
+    MapSnapshot[] mapUndoStack;
+    ChunkGeometry[] chunkUndoStack;
+    int mapSnapMultiplier = 1;    // 1, 2, 4, 8 cells per snap unit
+    int chunkEditorSnapSize = 8;  // geometry snap in px: 2, 4, 8, 16, 32
     string chunkToolMessage = "Draw mode: drag on the canvas to create a new chunk.";
     ChunkEditorTool chunkEditorTool = ChunkEditorTool.placePoint;
     int[] selectedPointIndices;
@@ -3224,6 +3307,18 @@ int main()
         if (hasActiveMap && selectedToolbarIndex < 0 && appScreen == AppScreen.map) {
             const mouseInsideCanvas = CheckCollisionPointRec(mousePosition, canvasRect);
             const wheelMove = mouseInsideCanvas ? GetMouseWheelMove() : 0.0f;
+            const ctrlDown = IsKeyDown(KeyboardKey.KEY_LEFT_CONTROL) || IsKeyDown(KeyboardKey.KEY_RIGHT_CONTROL);
+
+            if (ctrlDown && IsKeyPressed(KeyboardKey.KEY_Z) && mapUndoStack.length > 0) {
+                const snap = mapUndoStack[$ - 1];
+                placedChunks = snap.chunks.dup;
+                chunkGeometries.length = 0;
+                foreach (g; snap.geometries) chunkGeometries ~= dupGeometry(g);
+                mapUndoStack = mapUndoStack[0 .. $ - 1];
+                if (selectedChunkIndex >= cast(int)placedChunks.length) selectedChunkIndex = -1;
+                chunkToolMessage = to!string(TextFormat("Undo: %d step(s) remaining.", cast(int)mapUndoStack.length));
+                PlaySound(clickSound);
+            }
 
             if (!isDraggingChunk) {
                 if (IsKeyPressed(KeyboardKey.KEY_D)) {
@@ -3270,16 +3365,22 @@ int main()
                     isDraggingChunk = true;
                     chunkDragStart = clickedCell;
                     previewChunk = makeChunkFromCells(chunkDragStart, chunkDragStart);
+                    previewChunk.layer = currentLayer;
                     previewPlacementValid = isChunkPlacementValid(previewChunk, placedChunks);
                     break;
                 case ChunkTool.move:
                     if (clickedChunkIndex >= 0) {
-                        selectedChunkIndex = clickedChunkIndex;
-                        interactionStartChunk = placedChunks[selectedChunkIndex];
-                        dragCellOffset = GridCell(clickedCell.column - interactionStartChunk.column, clickedCell.row - interactionStartChunk.row);
-                        previewChunk = interactionStartChunk;
-                        previewPlacementValid = true;
-                        isDraggingChunk = true;
+                        if (placedChunks[clickedChunkIndex].layer != currentLayer) {
+                            chunkToolMessage = to!string(TextFormat("Chunk is on layer %d. Switch to that layer to move it.", placedChunks[clickedChunkIndex].layer));
+                            PlaySound(touchSound);
+                        } else {
+                            selectedChunkIndex = clickedChunkIndex;
+                            interactionStartChunk = placedChunks[selectedChunkIndex];
+                            dragCellOffset = GridCell(clickedCell.column - interactionStartChunk.column, clickedCell.row - interactionStartChunk.row);
+                            previewChunk = interactionStartChunk;
+                            previewPlacementValid = true;
+                            isDraggingChunk = true;
+                        }
                     } else {
                         PlaySound(touchSound);
                     }
@@ -3290,38 +3391,50 @@ int main()
                     break;
                 case ChunkTool.deleteChunk:
                     if (clickedChunkIndex >= 0) {
-                        placedChunks = placedChunks[0 .. clickedChunkIndex] ~ placedChunks[clickedChunkIndex + 1 .. $];
-                        chunkGeometries = chunkGeometries[0 .. clickedChunkIndex] ~ chunkGeometries[clickedChunkIndex + 1 .. $];
-                        if (selectedChunkIndex == clickedChunkIndex) {
-                            selectedChunkIndex = -1;
-                        } else if (selectedChunkIndex > clickedChunkIndex) {
-                            selectedChunkIndex--;
+                        if (placedChunks[clickedChunkIndex].layer != currentLayer) {
+                            chunkToolMessage = to!string(TextFormat("Chunk is on layer %d. Switch to that layer to delete it.", placedChunks[clickedChunkIndex].layer));
+                            PlaySound(touchSound);
+                        } else {
+                            pushMapUndo(mapUndoStack, placedChunks, chunkGeometries);
+                            placedChunks = placedChunks[0 .. clickedChunkIndex] ~ placedChunks[clickedChunkIndex + 1 .. $];
+                            chunkGeometries = chunkGeometries[0 .. clickedChunkIndex] ~ chunkGeometries[clickedChunkIndex + 1 .. $];
+                            if (selectedChunkIndex == clickedChunkIndex) {
+                                selectedChunkIndex = -1;
+                            } else if (selectedChunkIndex > clickedChunkIndex) {
+                                selectedChunkIndex--;
+                            }
+                            chunkToolMessage = "Chunk deleted.";
+                            PlaySound(deleteSound);
                         }
-                        chunkToolMessage = "Chunk deleted.";
-                        PlaySound(deleteSound);
                     } else {
                         PlaySound(touchSound);
                     }
                     break;
                 case ChunkTool.edit:
                     if (clickedChunkIndex >= 0) {
-                        selectedChunkIndex = clickedChunkIndex;
-                        editingChunkIndex = clickedChunkIndex;
-                        appScreen = AppScreen.chunkEditor;
-                        selectedPointIndices.length = 0;
-                        selectedFaceIndices.length = 0;
-                        selectedWallIndices.length = 0;
-                        selectedEntityIndices.length = 0;
-                        isBoxSelecting = false;
-                        chunkEditorTool = ChunkEditorTool.placePoint;
-                        chunkEditorMessage = to!string(TextFormat("Editing chunk %d. Place or select points to build faces.", clickedChunkIndex + 1));
-                        const editChunk = placedChunks[editingChunkIndex];
-                        chunkEditorCamera.target = Vector2(editChunk.width * mapGridCellSize * 0.5f, editChunk.height * mapGridCellSize * 0.5f);
-                        chunkEditorCamera.zoom = 2.0f;
-                        chunkPreviewYaw = 0.75f;
-                        chunkPreviewPitch = 0.55f;
-                        chunkPreviewDistance = getChunkPreviewDefaultDistance(chunkPreviewBounds);
-                        PlaySound(connectSound);
+                        if (placedChunks[clickedChunkIndex].layer != currentLayer) {
+                            chunkToolMessage = to!string(TextFormat("Chunk is on layer %d. Switch to that layer to edit it.", placedChunks[clickedChunkIndex].layer));
+                            PlaySound(touchSound);
+                        } else {
+                            selectedChunkIndex = clickedChunkIndex;
+                            editingChunkIndex = clickedChunkIndex;
+                            appScreen = AppScreen.chunkEditor;
+                            selectedPointIndices.length = 0;
+                            selectedFaceIndices.length = 0;
+                            selectedWallIndices.length = 0;
+                            selectedEntityIndices.length = 0;
+                            isBoxSelecting = false;
+                            chunkEditorTool = ChunkEditorTool.placePoint;
+                            chunkEditorMessage = to!string(TextFormat("Editing chunk %d. Place or select points to build faces.", clickedChunkIndex + 1));
+                            const editChunk = placedChunks[editingChunkIndex];
+                            chunkEditorCamera.target = Vector2(editChunk.width * mapGridCellSize * 0.5f, editChunk.height * mapGridCellSize * 0.5f);
+                            chunkEditorCamera.zoom = 2.0f;
+                            chunkPreviewYaw = 0.75f;
+                            chunkPreviewPitch = 0.55f;
+                            chunkPreviewDistance = getChunkPreviewDefaultDistance(chunkPreviewBounds);
+                            chunkUndoStack.length = 0;
+                            PlaySound(connectSound);
+                        }
                     } else {
                         selectedChunkIndex = -1;
                         PlaySound(touchSound);
@@ -3336,6 +3449,7 @@ int main()
                 final switch (activeChunkTool) {
                 case ChunkTool.draw:
                     previewChunk = makeChunkFromCells(chunkDragStart, currentCell);
+                    previewChunk.layer = currentLayer;
                     previewPlacementValid = isChunkPlacementValid(previewChunk, placedChunks);
                     break;
                 case ChunkTool.move:
@@ -3362,18 +3476,20 @@ int main()
                     final switch (activeChunkTool) {
                     case ChunkTool.draw:
                         if (previewPlacementValid) {
+                            pushMapUndo(mapUndoStack, placedChunks, chunkGeometries);
                             placedChunks ~= previewChunk;
                             chunkGeometries ~= ChunkGeometry.init;
                             selectedChunkIndex = cast(int)placedChunks.length - 1;
-                            chunkToolMessage = to!string(TextFormat("Chunk %d created.", selectedChunkIndex + 1));
+                            chunkToolMessage = to!string(TextFormat("Chunk %d created on layer %d.", selectedChunkIndex + 1, currentLayer));
                             PlaySound(placeSound);
                         } else {
-                            chunkToolMessage = "Chunks cannot overlap.";
+                            chunkToolMessage = "Chunks cannot overlap on the same layer.";
                             PlaySound(touchSound);
                         }
                         break;
                     case ChunkTool.move:
                         if (selectedChunkIndex >= 0 && previewPlacementValid) {
+                            pushMapUndo(mapUndoStack, placedChunks, chunkGeometries);
                             placedChunks[selectedChunkIndex] = previewChunk;
                             chunkToolMessage = "Chunk moved.";
                             PlaySound(moveSound);
@@ -3406,7 +3522,13 @@ int main()
             const keyboardShortcutsEnabled = !faceFloorEditMode && !faceCeilingEditMode && !batchFaceFloorEditMode && !batchFaceCeilingEditMode;
 
             if (keyboardShortcutsEnabled) {
-                if (IsKeyPressed(KeyboardKey.KEY_ONE)) {
+                if (controlDown && IsKeyPressed(KeyboardKey.KEY_Z) && chunkUndoStack.length > 0) {
+                    chunkGeometries[editingChunkIndex] = dupGeometry(chunkUndoStack[$ - 1]);
+                    chunkUndoStack = chunkUndoStack[0 .. $ - 1];
+                    clearChunkEditorSelection(selectedPointIndices, selectedFaceIndices, selectedWallIndices, selectedEntityIndices, selectedObjectIndices);
+                    chunkEditorMessage = to!string(TextFormat("Undo: %d step(s) remaining.", cast(int)chunkUndoStack.length));
+                    PlaySound(clickSound);
+                } else if (IsKeyPressed(KeyboardKey.KEY_ONE)) {
                     setChunkEditorTool(chunkEditorTool, ChunkEditorTool.placePoint, chunkEditorMessage, clickSound);
                 } else if (IsKeyPressed(KeyboardKey.KEY_TWO)) {
                     setChunkEditorTool(chunkEditorTool, ChunkEditorTool.selectPoint, chunkEditorMessage, clickSound);
@@ -3427,6 +3549,7 @@ int main()
                     }
                     setChunkEditorTool(chunkEditorTool, nextTool, chunkEditorMessage, clickSound);
                 } else if (IsKeyPressed(KeyboardKey.KEY_F)) {
+                    pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
                     createSelectedFace(
                         chunkGeometries[editingChunkIndex],
                         selectedPointIndices,
@@ -3436,6 +3559,7 @@ int main()
                         touchSound
                     );
                 } else if (IsKeyPressed(KeyboardKey.KEY_W)) {
+                    pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
                     createSelectedWall(
                         chunkGeometries[editingChunkIndex],
                         selectedPointIndices,
@@ -3446,6 +3570,7 @@ int main()
                         touchSound
                     );
                 } else if (IsKeyPressed(KeyboardKey.KEY_DELETE) || IsKeyPressed(KeyboardKey.KEY_BACKSPACE)) {
+                    pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
                     deleteCurrentChunkEditorSelection(
                         chunkGeometries[editingChunkIndex],
                         selectedPointIndices,
@@ -3605,6 +3730,7 @@ int main()
                 if (chunkEditorTool == ChunkEditorTool.placePoint) {
                     const point = getChunkPointAtWorldPosition(worldPosition, editChunk);
                     if (!chunkGeometryHasPoint(chunkGeometries[editingChunkIndex], point)) {
+                        pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
                         chunkGeometries[editingChunkIndex].points ~= point;
                         selectedPointIndices = [cast(int)chunkGeometries[editingChunkIndex].points.length - 1];
                         selectedFaceIndices.length = 0;
@@ -3623,6 +3749,7 @@ int main()
                         1.0f, 1.0f, 1.0f,
                         currentEntityType
                     );
+                    pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
                     chunkGeometries[editingChunkIndex].entities ~= newEntity;
                     selectedEntityIndices = [cast(int)chunkGeometries[editingChunkIndex].entities.length - 1];
                     selectedPointIndices.length = 0;
@@ -3638,6 +3765,7 @@ int main()
                         1.0f, 1.0f, 1.0f,
                         currentObjectType
                     );
+                    pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
                     chunkGeometries[editingChunkIndex].objects ~= newObject;
                     selectedObjectIndices = [cast(int)chunkGeometries[editingChunkIndex].objects.length - 1];
                     selectedPointIndices.length = 0;
@@ -3828,9 +3956,25 @@ int main()
             nextButtonX += buttonWidth + toolbarPadding;
         }
 
+        if (hasActiveMap && appScreen == AppScreen.map) {
+            const layerBtnSize = toolbarHeight - toolbarPadding * 2.0f;
+            const layerLabelWidth = cast(float)MeasureText(TextFormat("Layer: %d", currentLayer), 20) + 16.0f;
+            const layerControlWidth = layerLabelWidth + layerBtnSize * 2.0f + toolbarPadding * 2.0f;
+            const layerControlX = cast(float)GetScreenWidth() - layerControlWidth - toolbarPadding;
+            GuiLabel(Rectangle(layerControlX, toolbarPadding, layerLabelWidth, layerBtnSize), TextFormat("Layer: %d", currentLayer));
+            if (GuiButton(Rectangle(layerControlX + layerLabelWidth + toolbarPadding, toolbarPadding, layerBtnSize, layerBtnSize), "-")) {
+                if (currentLayer > 0) currentLayer--;
+                PlaySound(clickSound);
+            }
+            if (GuiButton(Rectangle(layerControlX + layerLabelWidth + layerBtnSize + toolbarPadding * 2.0f, toolbarPadding, layerBtnSize, layerBtnSize), "+")) {
+                currentLayer++;
+                PlaySound(clickSound);
+            }
+        }
+
         if (hasActiveMap) {
             if (appScreen == AppScreen.map) {
-                drawMapCanvas(canvasRect, gridLayout, placedChunks, chunkGeometries, ditherImage, selectedChunkIndex, showGrid, showChunkBounds, isDraggingChunk, previewChunk, previewPlacementValid);
+                drawMapCanvas(canvasRect, gridLayout, placedChunks, chunkGeometries, ditherImage, selectedChunkIndex, showGrid, showChunkBounds, isDraggingChunk, previewChunk, previewPlacementValid, currentLayer);
 
                 if (showInspector) {
                 GuiPanel(inspectorRect, "Map Canvas");
@@ -3883,23 +4027,50 @@ int main()
                     break;
                 }
 
-                GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 144.0f, inspectorRect.width - 32.0f, 40.0f), chunkToolMessage.ptr);
-                GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 190.0f, inspectorRect.width - 32.0f, 24.0f), TextFormat("Snap Size: %d px", cast(int)gridLayout.cellSize));
-                GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 216.0f, inspectorRect.width - 32.0f, 24.0f), TextFormat("Chunks: %d", cast(int)placedChunks.length));
-                GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 242.0f, inspectorRect.width - 32.0f, 24.0f), TextFormat("Zoom: %d%%", cast(int)(mapCamera.zoom * 100.0f)));
-                GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 268.0f, inspectorRect.width - 32.0f, 24.0f), TextFormat("Camera: %d, %d", cast(int)mapCamera.target.x, cast(int)mapCamera.target.y));
-                GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 300.0f, inspectorRect.width - 32.0f, 24.0f), "Map Name:");
-                if (GuiTextBox(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 326.0f, inspectorRect.width - 32.0f, 28.0f), mapNameBuf.ptr, cast(int)mapNameBuf.length - 1, mapNameEditMode)) {
+                drawWrappedLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 144.0f, inspectorRect.width - 32.0f, 56.0f), chunkToolMessage);
+                GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 206.0f, inspectorRect.width - 32.0f, 24.0f), TextFormat("Snap Size: %d px", cast(int)gridLayout.cellSize));
+                GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 232.0f, inspectorRect.width - 32.0f, 24.0f), TextFormat("Chunks: %d", cast(int)placedChunks.length));
+                GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 258.0f, inspectorRect.width - 32.0f, 24.0f), TextFormat("Zoom: %d%%", cast(int)(mapCamera.zoom * 100.0f)));
+                GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 284.0f, inspectorRect.width - 32.0f, 24.0f), TextFormat("Camera: %d, %d", cast(int)mapCamera.target.x, cast(int)mapCamera.target.y));
+                GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 316.0f, inspectorRect.width - 32.0f, 24.0f), "Map Name:");
+                if (GuiTextBox(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 342.0f, inspectorRect.width - 32.0f, 28.0f), mapNameBuf.ptr, cast(int)mapNameBuf.length - 1, mapNameEditMode)) {
                     mapNameEditMode = !mapNameEditMode;
                 }
 
                 if (selectedChunkIndex >= 0 && selectedChunkIndex < cast(int)placedChunks.length) {
                     const selectedChunk = placedChunks[selectedChunkIndex];
-                    GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 376.0f, inspectorRect.width - 32.0f, 24.0f), TextFormat("Selected Chunk: %d", selectedChunkIndex + 1));
-                    GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 402.0f, inspectorRect.width - 32.0f, 24.0f), TextFormat("Origin: %d, %d", selectedChunk.column, selectedChunk.row));
-                    GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 428.0f, inspectorRect.width - 32.0f, 24.0f), TextFormat("Size: %d x %d", selectedChunk.width, selectedChunk.height));
+                    GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 392.0f, inspectorRect.width - 32.0f, 24.0f), TextFormat("Selected Chunk: %d", selectedChunkIndex + 1));
+                    GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 418.0f, inspectorRect.width - 32.0f, 24.0f), TextFormat("Origin: %d, %d", selectedChunk.column, selectedChunk.row));
+                    GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 444.0f, inspectorRect.width - 32.0f, 24.0f), TextFormat("Size: %d x %d", selectedChunk.width, selectedChunk.height));
+                    GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 470.0f, 60.0f, 24.0f), "Layer:");
+                    const layerBtnW = 24.0f;
+                    if (GuiButton(Rectangle(inspectorRect.x + 82.0f, inspectorRect.y + 470.0f, layerBtnW, 24.0f), "-")) {
+                        if (placedChunks[selectedChunkIndex].layer > 0) {
+                            const candidate = MapChunk(selectedChunk.column, selectedChunk.row, selectedChunk.width, selectedChunk.height, selectedChunk.layer - 1);
+                            if (isChunkPlacementValid(candidate, placedChunks, selectedChunkIndex)) {
+                                pushMapUndo(mapUndoStack, placedChunks, chunkGeometries);
+                                placedChunks[selectedChunkIndex].layer--;
+                                chunkToolMessage = to!string(TextFormat("Chunk %d moved to layer %d.", selectedChunkIndex + 1, placedChunks[selectedChunkIndex].layer));
+                            } else {
+                                chunkToolMessage = "Layer change blocked: overlap on target layer.";
+                            }
+                            PlaySound(clickSound);
+                        }
+                    }
+                    GuiLabel(Rectangle(inspectorRect.x + 112.0f, inspectorRect.y + 470.0f, 32.0f, 24.0f), TextFormat("%d", selectedChunk.layer));
+                    if (GuiButton(Rectangle(inspectorRect.x + 148.0f, inspectorRect.y + 470.0f, layerBtnW, 24.0f), "+")) {
+                        const candidate = MapChunk(selectedChunk.column, selectedChunk.row, selectedChunk.width, selectedChunk.height, selectedChunk.layer + 1);
+                        if (isChunkPlacementValid(candidate, placedChunks, selectedChunkIndex)) {
+                            pushMapUndo(mapUndoStack, placedChunks, chunkGeometries);
+                            placedChunks[selectedChunkIndex].layer++;
+                            chunkToolMessage = to!string(TextFormat("Chunk %d moved to layer %d.", selectedChunkIndex + 1, placedChunks[selectedChunkIndex].layer));
+                        } else {
+                            chunkToolMessage = "Layer change blocked: overlap on target layer.";
+                        }
+                        PlaySound(clickSound);
+                    }
                 } else {
-                    GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 376.0f, inspectorRect.width - 32.0f, 24.0f), "Selected Chunk: none");
+                    GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 392.0f, inspectorRect.width - 32.0f, 24.0f), "Selected Chunk: none");
                 }
                 }
             } else if (editingChunkIndex >= 0 && editingChunkIndex < cast(int)placedChunks.length) {
@@ -3975,7 +4146,7 @@ int main()
 
                     // Scrollable content area below tool buttons
                     const contentAreaTop = inspectorRect.y + 136.0f;
-                    const fixedBottomHeight = 88.0f; // message + bounds + shortcuts
+                    const fixedBottomHeight = 104.0f; // message (2 lines) + bounds + shortcuts
                     const contentAreaHeight = inspectorRect.height - 136.0f - fixedBottomHeight;
                     const contentAreaRect = Rectangle(inspectorRect.x, contentAreaTop, inspectorRect.width, contentAreaHeight);
 
@@ -4079,6 +4250,7 @@ int main()
                     }
 
                     if (GuiButton(Rectangle(inspectorRect.x + 16.0f, iy(84.0f), 116.0f, 28.0f), "Create Face")) {
+                        pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
                         createSelectedFace(
                             chunkGeometries[editingChunkIndex],
                             selectedPointIndices,
@@ -4090,6 +4262,7 @@ int main()
                     }
 
                     if (GuiButton(Rectangle(inspectorRect.x + 140.0f, iy(84.0f), 116.0f, 28.0f), "Delete Face")) {
+                        pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
                         deleteSelectedFaces(
                             chunkGeometries[editingChunkIndex],
                             selectedFaceIndices,
@@ -4100,6 +4273,7 @@ int main()
                     }
 
                     if (GuiButton(Rectangle(inspectorRect.x + 16.0f, iy(120.0f), 116.0f, 28.0f), "Create Wall")) {
+                        pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
                         createSelectedWall(
                             chunkGeometries[editingChunkIndex],
                             selectedPointIndices,
@@ -4112,6 +4286,7 @@ int main()
                     }
 
                     if (GuiButton(Rectangle(inspectorRect.x + 140.0f, iy(120.0f), 116.0f, 28.0f), "Delete Wall")) {
+                        pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
                         deleteSelectedWalls(
                             chunkGeometries[editingChunkIndex],
                             selectedWallIndices,
@@ -4140,6 +4315,7 @@ int main()
                     }
 
                     if (GuiButton(Rectangle(inspectorRect.x + 16.0f, iy(192.0f), 116.0f, 28.0f), "Delete Entity")) {
+                        pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
                         deleteSelectedEntities(
                             chunkGeometries[editingChunkIndex],
                             selectedEntityIndices,
@@ -4150,6 +4326,7 @@ int main()
                     }
 
                     if (GuiButton(Rectangle(inspectorRect.x + 140.0f, iy(192.0f), 116.0f, 28.0f), "Delete Object")) {
+                        pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
                         deleteSelectedObjects(
                             chunkGeometries[editingChunkIndex],
                             selectedObjectIndices,
@@ -4198,6 +4375,7 @@ int main()
                             : (anySameYEnabled ? "Same Y: Mixed" : "Same Y: Off");
 
                         if (GuiButton(Rectangle(inspectorRect.x + 16.0f, iy(264.0f), 116.0f, 28.0f), autoWallsLabel.ptr)) {
+                            pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
                             const nextAutoWallsState = !allAutoWallsEnabled;
                             foreach (selectedFaceIndex; selectedFaceIndices) {
                                 if (selectedFaceIndex >= 0 && selectedFaceIndex < cast(int)chunkGeometries[editingChunkIndex].faces.length) {
@@ -4211,6 +4389,7 @@ int main()
                         }
 
                         if (GuiButton(Rectangle(inspectorRect.x + 140.0f, iy(264.0f), 116.0f, 28.0f), sameYLabel.ptr)) {
+                            pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
                             const nextSameYState = !allSameYEnabled;
                             foreach (selectedFaceIndex; selectedFaceIndices) {
                                 if (selectedFaceIndex >= 0 && selectedFaceIndex < cast(int)chunkGeometries[editingChunkIndex].faces.length) {
@@ -4243,6 +4422,7 @@ int main()
                             PlaySound(clickSound);
                         }
                         if (GuiButton(Rectangle(inspectorRect.x + 176.0f, iy(322.0f), 68.0f, 24.0f), "Apply")) {
+                            pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
                             const clampedFloorValue = clampInt(batchFaceFloorValue, -512, 1024);
                             foreach (selectedFaceIndex; selectedFaceIndices) {
                                 if (selectedFaceIndex >= 0 && selectedFaceIndex < cast(int)chunkGeometries[editingChunkIndex].faces.length) {
@@ -4273,6 +4453,7 @@ int main()
                             PlaySound(clickSound);
                         }
                         if (GuiButton(Rectangle(inspectorRect.x + 176.0f, iy(350.0f), 68.0f, 24.0f), "Apply")) {
+                            pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
                             const clampedCeilingValue = clampInt(batchFaceCeilingValue, -512, 1024);
                             foreach (selectedFaceIndex; selectedFaceIndices) {
                                 if (selectedFaceIndex >= 0 && selectedFaceIndex < cast(int)chunkGeometries[editingChunkIndex].faces.length) {
@@ -4304,6 +4485,7 @@ int main()
                             if (GuiValueBox(Rectangle(inspectorRect.x + 58.0f, iy(322.0f), 56.0f, 24.0f), null, &faceFloorInputValue, -512, 1024, faceFloorEditMode) == 1) {
                                 faceFloorEditMode = !faceFloorEditMode;
                                 if (!faceFloorEditMode) {
+                                    pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
                                     face.floorHeight = clampInt(faceFloorInputValue, -512, 1024);
                                     if (face.sameFloorAndCeiling) {
                                         face.ceilingHeight = face.floorHeight;
@@ -4314,6 +4496,7 @@ int main()
                                 }
                             }
                             if (GuiButton(Rectangle(inspectorRect.x + 118.0f, iy(322.0f), 24.0f, 24.0f), "-")) {
+                                pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
                                 face.floorHeight--;
                                 faceFloorInputValue = face.floorHeight;
                                 if (face.sameFloorAndCeiling) {
@@ -4326,6 +4509,7 @@ int main()
                                 PlaySound(clickSound);
                             }
                             if (GuiButton(Rectangle(inspectorRect.x + 146.0f, iy(322.0f), 24.0f, 24.0f), "+")) {
+                                pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
                                 face.floorHeight++;
                                 faceFloorInputValue = face.floorHeight;
                                 if (face.sameFloorAndCeiling) {
@@ -4346,6 +4530,7 @@ int main()
                             if (GuiValueBox(Rectangle(inspectorRect.x + 58.0f, iy(350.0f), 56.0f, 24.0f), null, &faceCeilingInputValue, -512, 1024, faceCeilingEditMode) == 1) {
                                 faceCeilingEditMode = !faceCeilingEditMode;
                                 if (!faceCeilingEditMode && !face.sameFloorAndCeiling) {
+                                    pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
                                     const nextCeilingValue = clampInt(faceCeilingInputValue, -512, 1024);
                                     face.ceilingHeight = nextCeilingValue >= face.floorHeight ? nextCeilingValue : face.floorHeight;
                                     faceCeilingInputValue = face.ceilingHeight;
@@ -4359,6 +4544,7 @@ int main()
                             if (!face.sameFloorAndCeiling) {
                                 if (decreaseCeiling) {
                                     if (face.ceilingHeight > face.floorHeight) {
+                                        pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
                                         face.ceilingHeight--;
                                         faceCeilingInputValue = face.ceilingHeight;
                                         PlaySound(clickSound);
@@ -4367,6 +4553,7 @@ int main()
                                     }
                                 }
                                 if (increaseCeiling) {
+                                    pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
                                     face.ceilingHeight++;
                                     faceCeilingInputValue = face.ceilingHeight;
                                     PlaySound(clickSound);
@@ -4375,6 +4562,7 @@ int main()
                             GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(380.0f), 96.0f, 24.0f), TextFormat("Palette: %d", face.paletteIndex));
                             if (GuiButton(Rectangle(inspectorRect.x + 114.0f, iy(378.0f), 24.0f, 24.0f), "-")) {
                                 if (face.paletteIndex > 0) {
+                                    pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
                                     face.paletteIndex--;
                                     PlaySound(clickSound);
                                 } else {
@@ -4383,6 +4571,7 @@ int main()
                             }
                             if (GuiButton(Rectangle(inspectorRect.x + 144.0f, iy(378.0f), 24.0f, 24.0f), "+")) {
                                 if (face.paletteIndex < paletteCount - 1) {
+                                    pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
                                     face.paletteIndex++;
                                     PlaySound(clickSound);
                                 } else {
@@ -4592,9 +4781,9 @@ int main()
                     // Fixed bottom section (not scrolled)
                     const fixedBottomY = inspectorRect.y + inspectorRect.height - fixedBottomHeight;
                     DrawLine(cast(int)inspectorRect.x, cast(int)(fixedBottomY - 1), cast(int)(inspectorRect.x + inspectorRect.width), cast(int)(fixedBottomY - 1), Fade(Colors.DARKGRAY, 0.8f));
-                    GuiLabel(Rectangle(inspectorRect.x + 16.0f, fixedBottomY + 4.0f, inspectorRect.width - 32.0f, 24.0f), chunkEditorMessage.ptr);
-                    GuiLabel(Rectangle(inspectorRect.x + 16.0f, fixedBottomY + 28.0f, inspectorRect.width - 32.0f, 24.0f), TextFormat("P:%d  F:%d  W:%d  E:%d  O:%d", cast(int)chunkGeometries[editingChunkIndex].points.length, cast(int)chunkGeometries[editingChunkIndex].faces.length, cast(int)chunkGeometries[editingChunkIndex].walls.length, cast(int)chunkGeometries[editingChunkIndex].entities.length, cast(int)chunkGeometries[editingChunkIndex].objects.length));
-                    GuiLabel(Rectangle(inspectorRect.x + 16.0f, fixedBottomY + 52.0f, inspectorRect.width - 32.0f, 24.0f), TextFormat("Sel P:%d  F:%d  W:%d  E:%d  O:%d", cast(int)selectedPointIndices.length, cast(int)selectedFaceIndices.length, cast(int)selectedWallIndices.length, cast(int)selectedEntityIndices.length, cast(int)selectedObjectIndices.length));
+                    drawWrappedLabel(Rectangle(inspectorRect.x + 16.0f, fixedBottomY + 4.0f, inspectorRect.width - 32.0f, 40.0f), chunkEditorMessage);
+                    GuiLabel(Rectangle(inspectorRect.x + 16.0f, fixedBottomY + 44.0f, inspectorRect.width - 32.0f, 24.0f), TextFormat("P:%d  F:%d  W:%d  E:%d  O:%d", cast(int)chunkGeometries[editingChunkIndex].points.length, cast(int)chunkGeometries[editingChunkIndex].faces.length, cast(int)chunkGeometries[editingChunkIndex].walls.length, cast(int)chunkGeometries[editingChunkIndex].entities.length, cast(int)chunkGeometries[editingChunkIndex].objects.length));
+                    GuiLabel(Rectangle(inspectorRect.x + 16.0f, fixedBottomY + 68.0f, inspectorRect.width - 32.0f, 24.0f), TextFormat("Sel P:%d  F:%d  W:%d  E:%d  O:%d", cast(int)selectedPointIndices.length, cast(int)selectedFaceIndices.length, cast(int)selectedWallIndices.length, cast(int)selectedEntityIndices.length, cast(int)selectedObjectIndices.length));
 
                     if (shouldReturnToMap) {
                         returnToMapFromChunkEditor(
