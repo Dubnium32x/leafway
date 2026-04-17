@@ -306,6 +306,19 @@ private int findChunkAtCell(MapChunk[] placedChunks, GridCell cell)
     return -1;
 }
 
+// Like findChunkAtCell but prefers chunks on preferredLayer; falls back to any layer.
+private int findChunkAtCellPreferLayer(MapChunk[] placedChunks, GridCell cell, int preferredLayer)
+{
+    int fallback = -1;
+    for (int index = cast(int)placedChunks.length - 1; index >= 0; index--) {
+        if (chunkContainsCell(placedChunks[index], cell)) {
+            if (placedChunks[index].layer == preferredLayer) return index;
+            if (fallback < 0) fallback = index;
+        }
+    }
+    return fallback;
+}
+
 private ChunkPoint getChunkPointAtWorldPosition(Vector2 worldPosition, MapChunk chunk)
 {
     const maxX = chunk.width * cast(int)mapGridCellSize;
@@ -3358,7 +3371,7 @@ int main()
 
             if (IsMouseButtonPressed(MouseButton.MOUSE_BUTTON_LEFT) && mouseInsideCanvas && !isPanningCanvas) {
                 const clickedCell = getGridCellAtPoint(mousePosition, gridLayout);
-                const clickedChunkIndex = findChunkAtCell(placedChunks, clickedCell);
+                const clickedChunkIndex = findChunkAtCellPreferLayer(placedChunks, clickedCell, currentLayer);
 
                 final switch (activeChunkTool) {
                 case ChunkTool.draw:
@@ -3371,6 +3384,7 @@ int main()
                 case ChunkTool.move:
                     if (clickedChunkIndex >= 0) {
                         if (placedChunks[clickedChunkIndex].layer != currentLayer) {
+                            selectedChunkIndex = -1;
                             chunkToolMessage = to!string(TextFormat("Chunk is on layer %d. Switch to that layer to move it.", placedChunks[clickedChunkIndex].layer));
                             PlaySound(touchSound);
                         } else {
@@ -3392,6 +3406,7 @@ int main()
                 case ChunkTool.deleteChunk:
                     if (clickedChunkIndex >= 0) {
                         if (placedChunks[clickedChunkIndex].layer != currentLayer) {
+                            selectedChunkIndex = -1;
                             chunkToolMessage = to!string(TextFormat("Chunk is on layer %d. Switch to that layer to delete it.", placedChunks[clickedChunkIndex].layer));
                             PlaySound(touchSound);
                         } else {
@@ -3413,6 +3428,7 @@ int main()
                 case ChunkTool.edit:
                     if (clickedChunkIndex >= 0) {
                         if (placedChunks[clickedChunkIndex].layer != currentLayer) {
+                            selectedChunkIndex = -1;
                             chunkToolMessage = to!string(TextFormat("Chunk is on layer %d. Switch to that layer to edit it.", placedChunks[clickedChunkIndex].layer));
                             PlaySound(touchSound);
                         } else {
@@ -3457,7 +3473,8 @@ int main()
                         currentCell.column - dragCellOffset.column,
                         currentCell.row - dragCellOffset.row,
                         interactionStartChunk.width,
-                        interactionStartChunk.height
+                        interactionStartChunk.height,
+                        interactionStartChunk.layer
                     );
                     previewPlacementValid = isChunkPlacementValid(previewChunk, placedChunks, selectedChunkIndex);
                     break;
