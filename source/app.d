@@ -42,7 +42,6 @@ struct MapChunk {
     int row;
     int width;
     int height;
-    int layer = 0;
 }
 
 enum ChunkTool {
@@ -104,6 +103,7 @@ struct ChunkEntity {
     float scaleY;
     float scaleZ;
     EntityType type;
+    int layer = 0;
 }
 
 struct ChunkObject {
@@ -117,6 +117,7 @@ struct ChunkObject {
     float scaleY;
     float scaleZ;
     ObjectType type;
+    int layer = 0;
 }
 
 struct ChunkPoint {
@@ -131,6 +132,7 @@ struct ChunkFace {
     int paletteIndex;
     bool autoWallFromHeightDifference;
     bool sameFloorAndCeiling;
+    int layer = 0;
 }
 
 struct ChunkWall {
@@ -139,6 +141,7 @@ struct ChunkWall {
     int floorHeight;
     int ceilingHeight;
     int paletteIndex;
+    int layer = 0;
 }
 
 struct ChunkGeometry {
@@ -279,7 +282,7 @@ private bool isChunkPlacementValid(MapChunk candidate, MapChunk[] placedChunks, 
             continue;
         }
 
-        if (candidate.layer == chunk.layer && chunksOverlap(candidate, chunk)) {
+        if (chunksOverlap(candidate, chunk)) {
             return false;
         }
     }
@@ -304,19 +307,6 @@ private int findChunkAtCell(MapChunk[] placedChunks, GridCell cell)
     }
 
     return -1;
-}
-
-// Like findChunkAtCell but prefers chunks on preferredLayer; falls back to any layer.
-private int findChunkAtCellPreferLayer(MapChunk[] placedChunks, GridCell cell, int preferredLayer)
-{
-    int fallback = -1;
-    for (int index = cast(int)placedChunks.length - 1; index >= 0; index--) {
-        if (chunkContainsCell(placedChunks[index], cell)) {
-            if (placedChunks[index].layer == preferredLayer) return index;
-            if (fallback < 0) fallback = index;
-        }
-    }
-    return fallback;
 }
 
 private ChunkPoint getChunkPointAtWorldPosition(Vector2 worldPosition, MapChunk chunk)
@@ -706,7 +696,7 @@ private bool pointInPolygon(Vector2 point, const(Vector2)[] polygonPoints)
     return inside;
 }
 
-private bool faceOverlapsExistingFaces(ChunkGeometry geometry, const(int)[] orderedPointIndices)
+private bool faceOverlapsExistingFaces(ChunkGeometry geometry, const(int)[] orderedPointIndices, int layer = -1)
 {
     ChunkFace candidateFace = ChunkFace(orderedPointIndices.dup, 0, 16, 0, true, false);
     const candidatePolygon = getFacePolygonPoints(geometry, candidateFace);
@@ -715,6 +705,7 @@ private bool faceOverlapsExistingFaces(ChunkGeometry geometry, const(int)[] orde
     }
 
     foreach (existingFace; geometry.faces) {
+        if (layer >= 0 && existingFace.layer != layer) continue;
         const existingPolygon = getFacePolygonPoints(geometry, existingFace);
         if (existingPolygon.length < 3) {
             continue;
@@ -1428,7 +1419,6 @@ private void drawMapCanvas(
     bool isDraggingChunk,
     MapChunk previewChunk,
     bool previewPlacementValid,
-    int currentLayer,
 )
 {
     DrawRectangleRec(canvasRect, Fade(Colors.BLACK, 0.24f));
@@ -1481,23 +1471,21 @@ private void drawMapCanvas(
     foreach (index, chunk; placedChunks) {
         const chunkRect = getChunkRect(chunk, gridLayout);
         const isSelected = cast(int)index == selectedChunkIndex;
-        const isActiveLayer = chunk.layer == currentLayer;
-        const dimFactor = isActiveLayer ? 1.0f : 0.28f;
 
-        DrawRectangleRec(chunkRect, Fade(Colors.DARKBLUE, (isSelected ? 0.60f : 0.42f) * dimFactor));
+        DrawRectangleRec(chunkRect, Fade(Colors.DARKBLUE, isSelected ? 0.60f : 0.42f));
 
         if (index < chunkGeometries.length) {
             const chunkOffset = Vector2(chunkRect.x, chunkRect.y);
             foreach (faceIndex, face; chunkGeometries[index].faces) {
-                drawPaletteFace(chunkGeometries[index], face, ditherImage, (isSelected ? 0.28f : 0.22f) * dimFactor, chunkOffset);
+                drawPaletteFace(chunkGeometries[index], face, ditherImage, isSelected ? 0.28f : 0.22f, chunkOffset);
                 if (isSelected) {
-                    drawFilledFace(chunkGeometries[index], face, Fade(Colors.GOLD, 0.10f * dimFactor), chunkOffset);
+                    drawFilledFace(chunkGeometries[index], face, Fade(Colors.GOLD, 0.10f), chunkOffset);
                 }
 
                 const polygonPoints = getFacePolygonPoints(chunkGeometries[index], face, chunkOffset);
                 for (int pointIndex = 0; pointIndex < cast(int)polygonPoints.length; pointIndex++) {
                     const nextPointIndex = (pointIndex + 1) % cast(int)polygonPoints.length;
-                    DrawLineV(polygonPoints[pointIndex], polygonPoints[nextPointIndex], Fade(Colors.WHITE, 0.45f * dimFactor));
+                    DrawLineV(polygonPoints[pointIndex], polygonPoints[nextPointIndex], Fade(Colors.WHITE, 0.45f));
                 }
             }
 
@@ -1510,7 +1498,7 @@ private void drawMapCanvas(
                 DrawLineV(
                     Vector2(chunkOffset.x + startPoint.x, chunkOffset.y + startPoint.y),
                     Vector2(chunkOffset.x + endPoint.x, chunkOffset.y + endPoint.y),
-                    Fade(Colors.MAROON, 0.85f * dimFactor)
+                    Fade(Colors.MAROON, 0.85f)
                 );
             }
         }
@@ -1518,13 +1506,8 @@ private void drawMapCanvas(
         DrawRectangleLinesEx(
             chunkRect,
             isSelected ? 3.0f : (showChunkBounds ? 2.5f : 1.5f),
-            isSelected ? Fade(Colors.GOLD, 0.95f * dimFactor) : Fade(Colors.WHITE, 0.85f * dimFactor)
+            isSelected ? Fade(Colors.GOLD, 0.95f) : Fade(Colors.WHITE, 0.85f)
         );
-
-        // Layer label in the top-left corner of the chunk
-        const labelPos = Vector2(chunkRect.x + 4.0f / gridLayout.camera.zoom, chunkRect.y + 2.0f / gridLayout.camera.zoom);
-        const labelFontSize = 14.0f / gridLayout.camera.zoom;
-        DrawTextPro(GetFontDefault(), TextFormat("L%d", chunk.layer), labelPos, Vector2(0, 0), 0.0f, labelFontSize, labelFontSize / 10.0f, Fade(isActiveLayer ? Colors.RAYWHITE : Colors.GRAY, 0.85f * dimFactor));
     }
 
     if (isDraggingChunk) {
@@ -1556,6 +1539,7 @@ private void drawChunkEditorCanvas(
     Rectangle boxSelectRect,
     bool showGrid,
     ChunkEditorTool editorTool,
+    int currentChunkLayer,
 )
 {
     DrawRectangleRec(canvasRect, Fade(Colors.BLACK, 0.24f));
@@ -1654,10 +1638,12 @@ private void drawChunkEditorCanvas(
         }
 
         const isSelected = selectedFaceIndicesContain(selectedFaceIndices, cast(int)faceIndex);
-        const edgeColor = isSelected ? Fade(Colors.GOLD, 0.96f) : Fade(Colors.WHITE, 0.86f);
-        drawPaletteFace(geometry, face, ditherImage, isSelected ? 0.36f : 0.26f);
+        const isActiveLayer = face.layer == currentChunkLayer;
+        const faceDim = isActiveLayer ? 1.0f : 0.28f;
+        const edgeColor = isSelected ? Fade(Colors.GOLD, 0.96f * faceDim) : Fade(Colors.WHITE, 0.86f * faceDim);
+        drawPaletteFace(geometry, face, ditherImage, (isSelected ? 0.36f : 0.26f) * faceDim);
         if (isSelected) {
-            drawFilledFace(geometry, face, Fade(Colors.GOLD, 0.12f));
+            drawFilledFace(geometry, face, Fade(Colors.GOLD, 0.12f * faceDim));
         }
 
         for (int index = 0; index < cast(int)face.pointIndices.length; index++) {
@@ -1679,18 +1665,21 @@ private void drawChunkEditorCanvas(
         if (wall.endPointIndex < 0 || wall.endPointIndex >= cast(int)geometry.points.length) continue;
 
         const isSelected = selectedWallIndicesContain(selectedWallIndices, cast(int)wallIndex);
+        const isActiveLayer = wall.layer == currentChunkLayer;
+        const wallDim = isActiveLayer ? 1.0f : 0.28f;
         const startPoint = getChunkPointPosition(geometry.points[wall.startPointIndex]);
         const endPoint = getChunkPointPosition(geometry.points[wall.endPointIndex]);
-        DrawLineV(startPoint, endPoint, isSelected ? Fade(Colors.RED, 0.98f) : Fade(Colors.MAROON, 0.92f));
+        DrawLineV(startPoint, endPoint, isSelected ? Fade(Colors.RED, 0.98f * wallDim) : Fade(Colors.MAROON, 0.92f * wallDim));
         if (isSelected) {
-            DrawCircleV(startPoint, 2.5f / gridLayout.camera.zoom, Fade(Colors.RED, 0.95f));
-            DrawCircleV(endPoint, 2.5f / gridLayout.camera.zoom, Fade(Colors.RED, 0.95f));
+            DrawCircleV(startPoint, 2.5f / gridLayout.camera.zoom, Fade(Colors.RED, 0.95f * wallDim));
+            DrawCircleV(endPoint, 2.5f / gridLayout.camera.zoom, Fade(Colors.RED, 0.95f * wallDim));
         }
     }
 
     foreach (entityIndex, entity; geometry.entities) {
         const entityPosition = Vector2(entity.x, entity.z);
         const isSelected = selectedEntityIndicesContain(selectedEntityIndices, cast(int)entityIndex);
+        const entityDim = (entity.layer == currentChunkLayer) ? 1.0f : 0.28f;
         
         Color entityColor;
         final switch (entity.type) {
@@ -1724,8 +1713,8 @@ private void drawChunkEditorCanvas(
         }
         
         const radius = (isSelected ? 7.0f : 5.0f) / gridLayout.camera.zoom;
-        DrawCircleV(entityPosition, radius, Fade(entityColor, 0.85f));
-        DrawCircleLinesV(entityPosition, radius * 1.2f, isSelected ? Fade(Colors.WHITE, 0.98f) : Fade(Colors.BLACK, 0.60f));
+        DrawCircleV(entityPosition, radius, Fade(entityColor, 0.85f * entityDim));
+        DrawCircleLinesV(entityPosition, radius * 1.2f, isSelected ? Fade(Colors.WHITE, 0.98f * entityDim) : Fade(Colors.BLACK, 0.60f * entityDim));
         
         // Draw purple direction indicator
         const directionLength = radius * 2.2f;
@@ -1733,10 +1722,10 @@ private void drawChunkEditorCanvas(
         const directionEndX = entityPosition.x + cos(directionAngle) * directionLength;
         const directionEndY = entityPosition.y + sin(directionAngle) * directionLength;
         const directionEnd = Vector2(directionEndX, directionEndY);
-        DrawLineEx(entityPosition, directionEnd, 2.5f / gridLayout.camera.zoom, Fade(Colors.PURPLE, 0.95f));
-        DrawCircleV(directionEnd, 2.5f / gridLayout.camera.zoom, Fade(Colors.PURPLE, 0.95f));
+        DrawLineEx(entityPosition, directionEnd, 2.5f / gridLayout.camera.zoom, Fade(Colors.PURPLE, 0.95f * entityDim));
+        DrawCircleV(directionEnd, 2.5f / gridLayout.camera.zoom, Fade(Colors.PURPLE, 0.95f * entityDim));
         
-        DrawCircleV(entityPosition, 1.5f / gridLayout.camera.zoom, Fade(Colors.BLACK, 0.85f));
+        DrawCircleV(entityPosition, 1.5f / gridLayout.camera.zoom, Fade(Colors.BLACK, 0.85f * entityDim));
         
         // Draw entity info text
         const textOffset = Vector2(0, -radius - 12.0f / gridLayout.camera.zoom);
@@ -1744,13 +1733,14 @@ private void drawChunkEditorCanvas(
         const typeText = getEntityTypeName(entity.type);
         const fontSize = 14.0f / gridLayout.camera.zoom;
         const textWidth = MeasureTextEx(GetFontDefault(), typeText.ptr, fontSize, fontSize / 10.0f).x;
-        DrawTextPro(GetFontDefault(), typeText.ptr, Vector2(textPos.x - textWidth / 2, textPos.y), Vector2(0, 0), 0.0f, fontSize, fontSize / 10.0f, Fade(Colors.BLACK, 0.95f));
-        DrawTextPro(GetFontDefault(), typeText.ptr, Vector2(textPos.x - textWidth / 2 - 1.0f / gridLayout.camera.zoom, textPos.y - 1.0f / gridLayout.camera.zoom), Vector2(0, 0), 0.0f, fontSize, fontSize / 10.0f, Fade(Colors.WHITE, 0.95f));
+        DrawTextPro(GetFontDefault(), typeText.ptr, Vector2(textPos.x - textWidth / 2, textPos.y), Vector2(0, 0), 0.0f, fontSize, fontSize / 10.0f, Fade(Colors.BLACK, 0.95f * entityDim));
+        DrawTextPro(GetFontDefault(), typeText.ptr, Vector2(textPos.x - textWidth / 2 - 1.0f / gridLayout.camera.zoom, textPos.y - 1.0f / gridLayout.camera.zoom), Vector2(0, 0), 0.0f, fontSize, fontSize / 10.0f, Fade(Colors.WHITE, 0.95f * entityDim));
     }
 
     foreach (objectIndex, obj; geometry.objects) {
         const objectPosition = Vector2(obj.x, obj.z);
         const isSelected = selectedObjectIndicesContain(selectedObjectIndices, cast(int)objectIndex);
+        const objectDim = (obj.layer == currentChunkLayer) ? 1.0f : 0.28f;
         
         Color objectColor;
         final switch (obj.type) {
@@ -1799,8 +1789,8 @@ private void drawChunkEditorCanvas(
         }
         
         const radius = (isSelected ? 7.5f : 5.5f) / gridLayout.camera.zoom;
-        DrawCircleV(objectPosition, radius, Fade(objectColor, 0.75f));
-        DrawCircleLinesV(objectPosition, radius * 1.2f, isSelected ? Fade(Colors.WHITE, 0.98f) : Fade(Colors.BLACK, 0.60f));
+        DrawCircleV(objectPosition, radius, Fade(objectColor, 0.75f * objectDim));
+        DrawCircleLinesV(objectPosition, radius * 1.2f, isSelected ? Fade(Colors.WHITE, 0.98f * objectDim) : Fade(Colors.BLACK, 0.60f * objectDim));
         
         // Draw purple direction indicator
         const directionLength = radius * 2.2f;
@@ -1808,18 +1798,18 @@ private void drawChunkEditorCanvas(
         const directionEndX = objectPosition.x + cos(directionAngle) * directionLength;
         const directionEndY = objectPosition.y + sin(directionAngle) * directionLength;
         const directionEnd = Vector2(directionEndX, directionEndY);
-        DrawLineEx(objectPosition, directionEnd, 2.5f / gridLayout.camera.zoom, Fade(Colors.PURPLE, 0.95f));
-        DrawCircleV(directionEnd, 2.5f / gridLayout.camera.zoom, Fade(Colors.PURPLE, 0.95f));
+        DrawLineEx(objectPosition, directionEnd, 2.5f / gridLayout.camera.zoom, Fade(Colors.PURPLE, 0.95f * objectDim));
+        DrawCircleV(directionEnd, 2.5f / gridLayout.camera.zoom, Fade(Colors.PURPLE, 0.95f * objectDim));
         
         // Draw height indicator (skyblue vertical line)
         const heightLineLength = fabs(obj.y) * 0.5f;
         if (heightLineLength > 0.5f) {
             const heightEnd = Vector2(objectPosition.x, objectPosition.y - heightLineLength);
-            DrawLineEx(objectPosition, heightEnd, 2.0f / gridLayout.camera.zoom, Fade(Colors.SKYBLUE, 0.85f));
-            DrawCircleV(heightEnd, 2.0f / gridLayout.camera.zoom, Fade(Colors.SKYBLUE, 0.85f));
+            DrawLineEx(objectPosition, heightEnd, 2.0f / gridLayout.camera.zoom, Fade(Colors.SKYBLUE, 0.85f * objectDim));
+            DrawCircleV(heightEnd, 2.0f / gridLayout.camera.zoom, Fade(Colors.SKYBLUE, 0.85f * objectDim));
         }
         
-        DrawCircleV(objectPosition, 1.5f / gridLayout.camera.zoom, Fade(Colors.BLACK, 0.85f));
+        DrawCircleV(objectPosition, 1.5f / gridLayout.camera.zoom, Fade(Colors.BLACK, 0.85f * objectDim));
         
         // Draw object info text
         const textOffset = Vector2(0, -radius - 12.0f / gridLayout.camera.zoom);
@@ -1828,8 +1818,8 @@ private void drawChunkEditorCanvas(
         const heightText = to!string(TextFormat("%s (Y:%.1f)", typeText.ptr, obj.y));
         const fontSize = 14.0f / gridLayout.camera.zoom;
         const textWidth = MeasureTextEx(GetFontDefault(), heightText.ptr, fontSize, fontSize / 10.0f).x;
-        DrawTextPro(GetFontDefault(), heightText.ptr, Vector2(textPos.x - textWidth / 2, textPos.y), Vector2(0, 0), 0.0f, fontSize, fontSize / 10.0f, Fade(Colors.BLACK, 0.95f));
-        DrawTextPro(GetFontDefault(), heightText.ptr, Vector2(textPos.x - textWidth / 2 - 1.0f / gridLayout.camera.zoom, textPos.y - 1.0f / gridLayout.camera.zoom), Vector2(0, 0), 0.0f, fontSize, fontSize / 10.0f, Fade(Colors.WHITE, 0.95f));
+        DrawTextPro(GetFontDefault(), heightText.ptr, Vector2(textPos.x - textWidth / 2, textPos.y), Vector2(0, 0), 0.0f, fontSize, fontSize / 10.0f, Fade(Colors.BLACK, 0.95f * objectDim));
+        DrawTextPro(GetFontDefault(), heightText.ptr, Vector2(textPos.x - textWidth / 2 - 1.0f / gridLayout.camera.zoom, textPos.y - 1.0f / gridLayout.camera.zoom), Vector2(0, 0), 0.0f, fontSize, fontSize / 10.0f, Fade(Colors.WHITE, 0.95f * objectDim));
     }
 
     foreach (pointIndex, point; geometry.points) {
@@ -2019,6 +2009,7 @@ private void createSelectedFace(
     ref string chunkEditorMessage,
     Sound connectSound,
     Sound touchSound,
+    int chunkLayer,
 )
 {
     if (selectedPointIndices.length < 3) {
@@ -2028,13 +2019,15 @@ private void createSelectedFace(
     }
 
     const orderedPointIndices = sortFacePointIndices(geometry, selectedPointIndices);
-    if (faceOverlapsExistingFaces(geometry, orderedPointIndices)) {
+    if (faceOverlapsExistingFaces(geometry, orderedPointIndices, chunkLayer)) {
         chunkEditorMessage = "Face is invalid: it overlaps another face or crosses itself.";
         PlaySound(touchSound);
         return;
     }
 
-    geometry.faces ~= ChunkFace(orderedPointIndices.dup, 0, 16, 0, true, false);
+    auto newFace = ChunkFace(orderedPointIndices.dup, 0, 16, 0, true, false);
+    newFace.layer = chunkLayer;
+    geometry.faces ~= newFace;
     selectedFaceIndices = [cast(int)geometry.faces.length - 1];
     selectedPointIndices.length = 0;
     chunkEditorMessage = to!string(TextFormat("Created face %d.", selectedFaceIndices[0] + 1));
@@ -2076,6 +2069,7 @@ private void createSelectedWall(
     ref string chunkEditorMessage,
     Sound connectSound,
     Sound touchSound,
+    int chunkLayer,
 )
 {
     if (selectedPointIndices.length != 2) {
@@ -2097,7 +2091,9 @@ private void createSelectedWall(
         return;
     }
 
-    geometry.walls ~= ChunkWall(pointAIndex, pointBIndex, 0, 16, 0);
+    auto newWall = ChunkWall(pointAIndex, pointBIndex, 0, 16, 0);
+    newWall.layer = chunkLayer;
+    geometry.walls ~= newWall;
     selectedWallIndices = [cast(int)geometry.walls.length - 1];
     selectedPointIndices.length = 0;
     selectedFaceIndices.length = 0;
@@ -2660,7 +2656,7 @@ private string serializeChunkToLeaf(MapChunk chunk, ChunkGeometry geometry)
     // i [MAX_POINTS]
     buf ~= format("i %d\n", cast(int)geometry.points.length);
 
-    // Faces: s x z ... p palette  f y0 y1
+    // Faces: s x z ... p palette  f y0 y1  l layer
     foreach (face; geometry.faces) {
         foreach (pointIndex; face.pointIndices) {
             if (pointIndex < 0 || pointIndex >= cast(int)geometry.points.length) continue;
@@ -2669,10 +2665,11 @@ private string serializeChunkToLeaf(MapChunk chunk, ChunkGeometry geometry)
         }
         buf ~= format("p %d\n", face.paletteIndex);
         buf ~= format("f %d %d\n", face.floorHeight, face.ceilingHeight);
+        buf ~= format("l %d\n", face.layer);
         buf ~= "\n";
     }
 
-    // Walls: w startX startZ  w endX endZ  p palette  f y0 y1
+    // Walls: w startX startZ  w endX endZ  p palette  f y0 y1  l layer
     foreach (wall; geometry.walls) {
         if (wall.startPointIndex < 0 || wall.startPointIndex >= cast(int)geometry.points.length) continue;
         if (wall.endPointIndex   < 0 || wall.endPointIndex   >= cast(int)geometry.points.length) continue;
@@ -2682,6 +2679,7 @@ private string serializeChunkToLeaf(MapChunk chunk, ChunkGeometry geometry)
         buf ~= format("w %d %d\n", endPt.x,   endPt.z);
         buf ~= format("p %d\n", wall.paletteIndex);
         buf ~= format("f %d %d\n", wall.floorHeight, wall.ceilingHeight);
+        buf ~= format("l %d\n", wall.layer);
         buf ~= "\n";
     }
 
@@ -2737,22 +2735,22 @@ private string serializeChunkToLeaf(MapChunk chunk, ChunkGeometry geometry)
         }
     }
 
-    // Objects: o x y z rx ry rz sx sy sz i
+    // Objects: o x y z rx ry rz sx sy sz type layer
     foreach (obj; geometry.objects) {
-        buf ~= format("o %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %d\n",
+        buf ~= format("o %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %d %d\n",
             obj.x, obj.y, obj.z,
             obj.rotationX, obj.rotationY, obj.rotationZ,
             obj.scaleX, obj.scaleY, obj.scaleZ,
-            cast(int)obj.type);
+            cast(int)obj.type, obj.layer);
     }
 
-    // Entities: e x z rx ry rz sx sy sz i
+    // Entities: e x z rx ry rz sx sy sz type layer
     foreach (entity; geometry.entities) {
-        buf ~= format("e %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %d\n",
+        buf ~= format("e %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %d %d\n",
             entity.x, entity.z,
             entity.rotationX, entity.rotationY, entity.rotationZ,
             entity.scaleX, entity.scaleY, entity.scaleZ,
-            cast(int)entity.type);
+            cast(int)entity.type, entity.layer);
     }
 
     buf ~= "ok\n";
@@ -2831,6 +2829,13 @@ private bool parseLeafSection(string[] lines, ref int lineIdx, ref ChunkGeometry
                     lineIdx++;
                 }
             }
+            if (lineIdx < lines.length) {
+                const fl = lines[lineIdx].strip();
+                if (fl.length >= 2 && fl[0] == 'l') {
+                    try { face.layer = fl[2..$].to!int; } catch (Exception) {}
+                    lineIdx++;
+                }
+            }
             if (lineIdx < lines.length && lines[lineIdx].strip() == "") lineIdx++;
             geometry.faces ~= face;
             continue;
@@ -2876,12 +2881,19 @@ private bool parseLeafSection(string[] lines, ref int lineIdx, ref ChunkGeometry
                     lineIdx++;
                 }
             }
+            if (lineIdx < lines.length) {
+                const fl = lines[lineIdx].strip();
+                if (fl.length >= 2 && fl[0] == 'l') {
+                    try { wall.layer = fl[2..$].to!int; } catch (Exception) {}
+                    lineIdx++;
+                }
+            }
             if (lineIdx < lines.length && lines[lineIdx].strip() == "") lineIdx++;
             geometry.walls ~= wall;
             continue;
         }
 
-        // Object: o x y z rx ry rz sx sy sz type
+        // Object: o x y z rx ry rz sx sy sz type [layer]
         if (line.length >= 2 && line[0] == 'o') {
             const parts = line[2..$].split(' ');
             if (parts.length >= 10) {
@@ -2891,6 +2903,7 @@ private bool parseLeafSection(string[] lines, ref int lineIdx, ref ChunkGeometry
                     obj.rotationX = parts[3].to!float; obj.rotationY = parts[4].to!float; obj.rotationZ = parts[5].to!float;
                     obj.scaleX = parts[6].to!float; obj.scaleY = parts[7].to!float; obj.scaleZ = parts[8].to!float;
                     obj.type = cast(ObjectType)parts[9].to!int;
+                    if (parts.length >= 11) obj.layer = parts[10].to!int;
                     geometry.objects ~= obj;
                 } catch (Exception) {}
             }
@@ -2898,7 +2911,7 @@ private bool parseLeafSection(string[] lines, ref int lineIdx, ref ChunkGeometry
             continue;
         }
 
-        // Entity: e x z rx ry rz sx sy sz type
+        // Entity: e x z rx ry rz sx sy sz type [layer]
         if (line.length >= 2 && line[0] == 'e') {
             const parts = line[2..$].split(' ');
             if (parts.length >= 9) {
@@ -2908,6 +2921,7 @@ private bool parseLeafSection(string[] lines, ref int lineIdx, ref ChunkGeometry
                     entity.rotationX = parts[2].to!float; entity.rotationY = parts[3].to!float; entity.rotationZ = parts[4].to!float;
                     entity.scaleX = parts[5].to!float; entity.scaleY = parts[6].to!float; entity.scaleZ = parts[7].to!float;
                     entity.type = cast(EntityType)parts[8].to!int;
+                    if (parts.length >= 10) entity.layer = parts[9].to!int;
                     geometry.entities ~= entity;
                 } catch (Exception) {}
             }
@@ -2928,7 +2942,7 @@ private string serializeMapToLm(MapChunk[] placedChunks, ChunkGeometry[] chunkGe
     buf ~= format("%d\n", count);
     for (int i = 0; i < count; i++) {
         const chunk = placedChunks[i];
-        buf ~= format("chunk %d %d %d %d %d\n", chunk.column, chunk.row, chunk.width, chunk.height, chunk.layer);
+        buf ~= format("chunk %d %d %d %d\n", chunk.column, chunk.row, chunk.width, chunk.height);
         buf ~= serializeChunkToLeaf(placedChunks[i], chunkGeometries[i]);
     }
     return buf.data;
@@ -2957,17 +2971,16 @@ private bool loadMapFromLm(string content, ref MapChunk[] placedChunks, ref Chun
         if (!chunkLine.startsWith("chunk ")) return false;
         const chunkParts = chunkLine[6 .. $].split(' ');
         if (chunkParts.length < 4) return false;
-        int col, row, w, h, layer;
+        int col, row, w, h;
         try {
             col = chunkParts[0].to!int; row = chunkParts[1].to!int;
             w   = chunkParts[2].to!int; h   = chunkParts[3].to!int;
-            layer = chunkParts.length >= 5 ? chunkParts[4].to!int : 0;
         } catch (Exception) { return false; }
 
         ChunkGeometry geometry;
         if (!parseLeafSection(lines, lineIdx, geometry)) return false;
 
-        placedChunks   ~= MapChunk(col, row, w, h, layer);
+        placedChunks   ~= MapChunk(col, row, w, h);
         chunkGeometries ~= geometry;
     }
     return true;
@@ -3200,7 +3213,7 @@ int main()
     MapChunk previewChunk = MapChunk(0, 0, 1, 1);
     MapChunk interactionStartChunk = MapChunk(0, 0, 1, 1);
     bool previewPlacementValid = true;
-    int currentLayer = 0;
+    int currentChunkLayer = 0;
     MapSnapshot[] mapUndoStack;
     ChunkGeometry[] chunkUndoStack;
     int mapSnapMultiplier = 1;    // 1, 2, 4, 8 cells per snap unit
@@ -3371,30 +3384,23 @@ int main()
 
             if (IsMouseButtonPressed(MouseButton.MOUSE_BUTTON_LEFT) && mouseInsideCanvas && !isPanningCanvas) {
                 const clickedCell = getGridCellAtPoint(mousePosition, gridLayout);
-                const clickedChunkIndex = findChunkAtCellPreferLayer(placedChunks, clickedCell, currentLayer);
+                const clickedChunkIndex = findChunkAtCell(placedChunks, clickedCell);
 
                 final switch (activeChunkTool) {
                 case ChunkTool.draw:
                     isDraggingChunk = true;
                     chunkDragStart = clickedCell;
                     previewChunk = makeChunkFromCells(chunkDragStart, chunkDragStart);
-                    previewChunk.layer = currentLayer;
                     previewPlacementValid = isChunkPlacementValid(previewChunk, placedChunks);
                     break;
                 case ChunkTool.move:
                     if (clickedChunkIndex >= 0) {
-                        if (placedChunks[clickedChunkIndex].layer != currentLayer) {
-                            selectedChunkIndex = -1;
-                            chunkToolMessage = to!string(TextFormat("Chunk is on layer %d. Switch to that layer to move it.", placedChunks[clickedChunkIndex].layer));
-                            PlaySound(touchSound);
-                        } else {
-                            selectedChunkIndex = clickedChunkIndex;
-                            interactionStartChunk = placedChunks[selectedChunkIndex];
-                            dragCellOffset = GridCell(clickedCell.column - interactionStartChunk.column, clickedCell.row - interactionStartChunk.row);
-                            previewChunk = interactionStartChunk;
-                            previewPlacementValid = true;
-                            isDraggingChunk = true;
-                        }
+                        selectedChunkIndex = clickedChunkIndex;
+                        interactionStartChunk = placedChunks[selectedChunkIndex];
+                        dragCellOffset = GridCell(clickedCell.column - interactionStartChunk.column, clickedCell.row - interactionStartChunk.row);
+                        previewChunk = interactionStartChunk;
+                        previewPlacementValid = true;
+                        isDraggingChunk = true;
                     } else {
                         PlaySound(touchSound);
                     }
@@ -3405,52 +3411,41 @@ int main()
                     break;
                 case ChunkTool.deleteChunk:
                     if (clickedChunkIndex >= 0) {
-                        if (placedChunks[clickedChunkIndex].layer != currentLayer) {
+                        pushMapUndo(mapUndoStack, placedChunks, chunkGeometries);
+                        placedChunks = placedChunks[0 .. clickedChunkIndex] ~ placedChunks[clickedChunkIndex + 1 .. $];
+                        chunkGeometries = chunkGeometries[0 .. clickedChunkIndex] ~ chunkGeometries[clickedChunkIndex + 1 .. $];
+                        if (selectedChunkIndex == clickedChunkIndex) {
                             selectedChunkIndex = -1;
-                            chunkToolMessage = to!string(TextFormat("Chunk is on layer %d. Switch to that layer to delete it.", placedChunks[clickedChunkIndex].layer));
-                            PlaySound(touchSound);
-                        } else {
-                            pushMapUndo(mapUndoStack, placedChunks, chunkGeometries);
-                            placedChunks = placedChunks[0 .. clickedChunkIndex] ~ placedChunks[clickedChunkIndex + 1 .. $];
-                            chunkGeometries = chunkGeometries[0 .. clickedChunkIndex] ~ chunkGeometries[clickedChunkIndex + 1 .. $];
-                            if (selectedChunkIndex == clickedChunkIndex) {
-                                selectedChunkIndex = -1;
-                            } else if (selectedChunkIndex > clickedChunkIndex) {
-                                selectedChunkIndex--;
-                            }
-                            chunkToolMessage = "Chunk deleted.";
-                            PlaySound(deleteSound);
+                        } else if (selectedChunkIndex > clickedChunkIndex) {
+                            selectedChunkIndex--;
                         }
+                        chunkToolMessage = "Chunk deleted.";
+                        PlaySound(deleteSound);
                     } else {
                         PlaySound(touchSound);
                     }
                     break;
                 case ChunkTool.edit:
                     if (clickedChunkIndex >= 0) {
-                        if (placedChunks[clickedChunkIndex].layer != currentLayer) {
-                            selectedChunkIndex = -1;
-                            chunkToolMessage = to!string(TextFormat("Chunk is on layer %d. Switch to that layer to edit it.", placedChunks[clickedChunkIndex].layer));
-                            PlaySound(touchSound);
-                        } else {
-                            selectedChunkIndex = clickedChunkIndex;
-                            editingChunkIndex = clickedChunkIndex;
-                            appScreen = AppScreen.chunkEditor;
-                            selectedPointIndices.length = 0;
-                            selectedFaceIndices.length = 0;
-                            selectedWallIndices.length = 0;
-                            selectedEntityIndices.length = 0;
-                            isBoxSelecting = false;
-                            chunkEditorTool = ChunkEditorTool.placePoint;
-                            chunkEditorMessage = to!string(TextFormat("Editing chunk %d. Place or select points to build faces.", clickedChunkIndex + 1));
-                            const editChunk = placedChunks[editingChunkIndex];
-                            chunkEditorCamera.target = Vector2(editChunk.width * mapGridCellSize * 0.5f, editChunk.height * mapGridCellSize * 0.5f);
-                            chunkEditorCamera.zoom = 2.0f;
-                            chunkPreviewYaw = 0.75f;
-                            chunkPreviewPitch = 0.55f;
-                            chunkPreviewDistance = getChunkPreviewDefaultDistance(chunkPreviewBounds);
-                            chunkUndoStack.length = 0;
-                            PlaySound(connectSound);
-                        }
+                        selectedChunkIndex = clickedChunkIndex;
+                        editingChunkIndex = clickedChunkIndex;
+                        appScreen = AppScreen.chunkEditor;
+                        selectedPointIndices.length = 0;
+                        selectedFaceIndices.length = 0;
+                        selectedWallIndices.length = 0;
+                        selectedEntityIndices.length = 0;
+                        isBoxSelecting = false;
+                        chunkEditorTool = ChunkEditorTool.placePoint;
+                        chunkEditorMessage = to!string(TextFormat("Editing chunk %d. Place or select points to build faces.", clickedChunkIndex + 1));
+                        const editChunk = placedChunks[editingChunkIndex];
+                        chunkEditorCamera.target = Vector2(editChunk.width * mapGridCellSize * 0.5f, editChunk.height * mapGridCellSize * 0.5f);
+                        chunkEditorCamera.zoom = 2.0f;
+                        chunkPreviewYaw = 0.75f;
+                        chunkPreviewPitch = 0.55f;
+                        chunkPreviewDistance = getChunkPreviewDefaultDistance(chunkPreviewBounds);
+                        chunkUndoStack.length = 0;
+                        currentChunkLayer = 0;
+                        PlaySound(connectSound);
                     } else {
                         selectedChunkIndex = -1;
                         PlaySound(touchSound);
@@ -3465,7 +3460,6 @@ int main()
                 final switch (activeChunkTool) {
                 case ChunkTool.draw:
                     previewChunk = makeChunkFromCells(chunkDragStart, currentCell);
-                    previewChunk.layer = currentLayer;
                     previewPlacementValid = isChunkPlacementValid(previewChunk, placedChunks);
                     break;
                 case ChunkTool.move:
@@ -3473,8 +3467,7 @@ int main()
                         currentCell.column - dragCellOffset.column,
                         currentCell.row - dragCellOffset.row,
                         interactionStartChunk.width,
-                        interactionStartChunk.height,
-                        interactionStartChunk.layer
+                        interactionStartChunk.height
                     );
                     previewPlacementValid = isChunkPlacementValid(previewChunk, placedChunks, selectedChunkIndex);
                     break;
@@ -3497,10 +3490,10 @@ int main()
                             placedChunks ~= previewChunk;
                             chunkGeometries ~= ChunkGeometry.init;
                             selectedChunkIndex = cast(int)placedChunks.length - 1;
-                            chunkToolMessage = to!string(TextFormat("Chunk %d created on layer %d.", selectedChunkIndex + 1, currentLayer));
+                            chunkToolMessage = to!string(TextFormat("Chunk %d created.", selectedChunkIndex + 1));
                             PlaySound(placeSound);
                         } else {
-                            chunkToolMessage = "Chunks cannot overlap on the same layer.";
+                            chunkToolMessage = "Chunks cannot overlap.";
                             PlaySound(touchSound);
                         }
                         break;
@@ -3573,7 +3566,8 @@ int main()
                         selectedFaceIndices,
                         chunkEditorMessage,
                         connectSound,
-                        touchSound
+                        touchSound,
+                        currentChunkLayer
                     );
                 } else if (IsKeyPressed(KeyboardKey.KEY_W)) {
                     pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
@@ -3584,7 +3578,8 @@ int main()
                         selectedWallIndices,
                         chunkEditorMessage,
                         connectSound,
-                        touchSound
+                        touchSound,
+                        currentChunkLayer
                     );
                 } else if (IsKeyPressed(KeyboardKey.KEY_DELETE) || IsKeyPressed(KeyboardKey.KEY_BACKSPACE)) {
                     pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
@@ -3760,12 +3755,13 @@ int main()
                         PlaySound(touchSound);
                     }
                 } else if (chunkEditorTool == ChunkEditorTool.placeEntity) {
-                    const newEntity = ChunkEntity(
+                    ChunkEntity newEntity = ChunkEntity(
                         worldPosition.x, worldPosition.y,
                         0.0f, currentEntityRotationY, 0.0f,
                         1.0f, 1.0f, 1.0f,
                         currentEntityType
                     );
+                    newEntity.layer = currentChunkLayer;
                     pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
                     chunkGeometries[editingChunkIndex].entities ~= newEntity;
                     selectedEntityIndices = [cast(int)chunkGeometries[editingChunkIndex].entities.length - 1];
@@ -3776,12 +3772,13 @@ int main()
                     chunkEditorMessage = to!string(TextFormat("Placed entity: %s at %.1f, %.1f.", getEntityTypeName(currentEntityType).ptr, worldPosition.x, worldPosition.y));
                     PlaySound(placeSound);
                 } else if (chunkEditorTool == ChunkEditorTool.placeObject) {
-                    const newObject = ChunkObject(
+                    ChunkObject newObject = ChunkObject(
                         worldPosition.x, currentObjectHeight, worldPosition.y,
                         0.0f, currentObjectRotationY, 0.0f,
                         1.0f, 1.0f, 1.0f,
                         currentObjectType
                     );
+                    newObject.layer = currentChunkLayer;
                     pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
                     chunkGeometries[editingChunkIndex].objects ~= newObject;
                     selectedObjectIndices = [cast(int)chunkGeometries[editingChunkIndex].objects.length - 1];
@@ -3973,25 +3970,25 @@ int main()
             nextButtonX += buttonWidth + toolbarPadding;
         }
 
-        if (hasActiveMap && appScreen == AppScreen.map) {
+        if (hasActiveMap && appScreen == AppScreen.chunkEditor) {
             const layerBtnSize = toolbarHeight - toolbarPadding * 2.0f;
-            const layerLabelWidth = cast(float)MeasureText(TextFormat("Layer: %d", currentLayer), 20) + 16.0f;
+            const layerLabelWidth = cast(float)MeasureText(TextFormat("Layer: %d", currentChunkLayer), 20) + 16.0f;
             const layerControlWidth = layerLabelWidth + layerBtnSize * 2.0f + toolbarPadding * 2.0f;
             const layerControlX = cast(float)GetScreenWidth() - layerControlWidth - toolbarPadding;
-            GuiLabel(Rectangle(layerControlX, toolbarPadding, layerLabelWidth, layerBtnSize), TextFormat("Layer: %d", currentLayer));
+            GuiLabel(Rectangle(layerControlX, toolbarPadding, layerLabelWidth, layerBtnSize), TextFormat("Layer: %d", currentChunkLayer));
             if (GuiButton(Rectangle(layerControlX + layerLabelWidth + toolbarPadding, toolbarPadding, layerBtnSize, layerBtnSize), "-")) {
-                if (currentLayer > 0) currentLayer--;
+                if (currentChunkLayer > 0) currentChunkLayer--;
                 PlaySound(clickSound);
             }
             if (GuiButton(Rectangle(layerControlX + layerLabelWidth + layerBtnSize + toolbarPadding * 2.0f, toolbarPadding, layerBtnSize, layerBtnSize), "+")) {
-                currentLayer++;
+                currentChunkLayer++;
                 PlaySound(clickSound);
             }
         }
 
         if (hasActiveMap) {
             if (appScreen == AppScreen.map) {
-                drawMapCanvas(canvasRect, gridLayout, placedChunks, chunkGeometries, ditherImage, selectedChunkIndex, showGrid, showChunkBounds, isDraggingChunk, previewChunk, previewPlacementValid, currentLayer);
+                drawMapCanvas(canvasRect, gridLayout, placedChunks, chunkGeometries, ditherImage, selectedChunkIndex, showGrid, showChunkBounds, isDraggingChunk, previewChunk, previewPlacementValid);
 
                 if (showInspector) {
                 GuiPanel(inspectorRect, "Map Canvas");
@@ -4059,33 +4056,6 @@ int main()
                     GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 392.0f, inspectorRect.width - 32.0f, 24.0f), TextFormat("Selected Chunk: %d", selectedChunkIndex + 1));
                     GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 418.0f, inspectorRect.width - 32.0f, 24.0f), TextFormat("Origin: %d, %d", selectedChunk.column, selectedChunk.row));
                     GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 444.0f, inspectorRect.width - 32.0f, 24.0f), TextFormat("Size: %d x %d", selectedChunk.width, selectedChunk.height));
-                    GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 470.0f, 60.0f, 24.0f), "Layer:");
-                    const layerBtnW = 24.0f;
-                    if (GuiButton(Rectangle(inspectorRect.x + 82.0f, inspectorRect.y + 470.0f, layerBtnW, 24.0f), "-")) {
-                        if (placedChunks[selectedChunkIndex].layer > 0) {
-                            const candidate = MapChunk(selectedChunk.column, selectedChunk.row, selectedChunk.width, selectedChunk.height, selectedChunk.layer - 1);
-                            if (isChunkPlacementValid(candidate, placedChunks, selectedChunkIndex)) {
-                                pushMapUndo(mapUndoStack, placedChunks, chunkGeometries);
-                                placedChunks[selectedChunkIndex].layer--;
-                                chunkToolMessage = to!string(TextFormat("Chunk %d moved to layer %d.", selectedChunkIndex + 1, placedChunks[selectedChunkIndex].layer));
-                            } else {
-                                chunkToolMessage = "Layer change blocked: overlap on target layer.";
-                            }
-                            PlaySound(clickSound);
-                        }
-                    }
-                    GuiLabel(Rectangle(inspectorRect.x + 112.0f, inspectorRect.y + 470.0f, 32.0f, 24.0f), TextFormat("%d", selectedChunk.layer));
-                    if (GuiButton(Rectangle(inspectorRect.x + 148.0f, inspectorRect.y + 470.0f, layerBtnW, 24.0f), "+")) {
-                        const candidate = MapChunk(selectedChunk.column, selectedChunk.row, selectedChunk.width, selectedChunk.height, selectedChunk.layer + 1);
-                        if (isChunkPlacementValid(candidate, placedChunks, selectedChunkIndex)) {
-                            pushMapUndo(mapUndoStack, placedChunks, chunkGeometries);
-                            placedChunks[selectedChunkIndex].layer++;
-                            chunkToolMessage = to!string(TextFormat("Chunk %d moved to layer %d.", selectedChunkIndex + 1, placedChunks[selectedChunkIndex].layer));
-                        } else {
-                            chunkToolMessage = "Layer change blocked: overlap on target layer.";
-                        }
-                        PlaySound(clickSound);
-                    }
                 } else {
                     GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 392.0f, inspectorRect.width - 32.0f, 24.0f), "Selected Chunk: none");
                 }
@@ -4112,7 +4082,8 @@ int main()
                     isBoxSelecting,
                     getNormalizedRectangleFromPoints(boxSelectStartWorld, boxSelectEndWorld),
                     showGrid,
-                    chunkEditorTool
+                    chunkEditorTool,
+                    currentChunkLayer
                 );
 
                 const previewCamera = getChunkPreviewCamera(chunkPreviewBounds, chunkPreviewYaw, chunkPreviewPitch, chunkPreviewDistance);
@@ -4274,7 +4245,8 @@ int main()
                             selectedFaceIndices,
                             chunkEditorMessage,
                             connectSound,
-                            touchSound
+                            touchSound,
+                            currentChunkLayer
                         );
                     }
 
@@ -4298,7 +4270,8 @@ int main()
                             selectedWallIndices,
                             chunkEditorMessage,
                             connectSound,
-                            touchSound
+                            touchSound,
+                            currentChunkLayer
                         );
                     }
 
