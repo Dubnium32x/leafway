@@ -372,9 +372,10 @@ private Vector2 getFaceCentroid(ChunkGeometry geometry, ChunkFace face)
     return Vector2(sumX / face.pointIndices.length, sumY / face.pointIndices.length);
 }
 
-private int findFaceAtWorldPosition(ChunkGeometry geometry, Vector2 worldPosition, float threshold)
+private int findFaceAtWorldPosition(ChunkGeometry geometry, Vector2 worldPosition, float threshold, int layer = -1)
 {
     for (int index = cast(int)geometry.faces.length - 1; index >= 0; index--) {
+        if (layer >= 0 && geometry.faces[index].layer != layer) continue;
         const polygonPoints = getFacePolygonPoints(geometry, geometry.faces[index]);
         if (polygonPoints.length >= 3 && pointInPolygon(worldPosition, polygonPoints)) {
             return index;
@@ -429,12 +430,13 @@ private float distanceSquaredToSegment(Vector2 point, Vector2 segmentStart, Vect
     return closestDeltaX * closestDeltaX + closestDeltaY * closestDeltaY;
 }
 
-private int findWallAtWorldPosition(ChunkGeometry geometry, Vector2 worldPosition, float threshold)
+private int findWallAtWorldPosition(ChunkGeometry geometry, Vector2 worldPosition, float threshold, int layer = -1)
 {
     const thresholdSquared = threshold * threshold;
 
     for (int index = cast(int)geometry.walls.length - 1; index >= 0; index--) {
         const wall = geometry.walls[index];
+        if (layer >= 0 && wall.layer != layer) continue;
         if (wall.startPointIndex < 0 || wall.startPointIndex >= cast(int)geometry.points.length) continue;
         if (wall.endPointIndex < 0 || wall.endPointIndex >= cast(int)geometry.points.length) continue;
 
@@ -1228,12 +1230,13 @@ private bool rayHitsWallQuad(Ray ray, Vector3 v0, Vector3 v1, Vector3 v2, Vector
 
 // Find the nearest explicit (ChunkWall) in the editing chunk hit by a ray.
 // Returns the wall index, or -1. Sets outT to the hit distance.
-private int findExplicitWallHitByRay(ChunkGeometry geometry, Ray ray, Vector2 offset, ref float outT)
+private int findExplicitWallHitByRay(ChunkGeometry geometry, Ray ray, Vector2 offset, ref float outT, int layer = -1)
 {
     int bestIndex = -1;
     float bestT = float.infinity;
 
     foreach (wallIndex, wall; geometry.walls) {
+        if (layer >= 0 && wall.layer != layer) continue;
         if (wall.startPointIndex < 0 || wall.startPointIndex >= cast(int)geometry.points.length) continue;
         if (wall.endPointIndex   < 0 || wall.endPointIndex   >= cast(int)geometry.points.length) continue;
 
@@ -1256,12 +1259,13 @@ private int findExplicitWallHitByRay(ChunkGeometry geometry, Ray ray, Vector2 of
 }
 
 // Find the face (index) whose auto-wall is nearest to the ray. Returns -1 if none.
-private int findAutoWallFaceHitByRay(ChunkGeometry geometry, Ray ray, Vector2 offset, ref float outT)
+private int findAutoWallFaceHitByRay(ChunkGeometry geometry, Ray ray, Vector2 offset, ref float outT, int layer = -1)
 {
     int bestFaceIndex = -1;
     float bestT = float.infinity;
 
     foreach (faceIndex, face; geometry.faces) {
+        if (layer >= 0 && face.layer != layer) continue;
         if (!face.autoWallFromHeightDifference || face.pointIndices.length < 2) continue;
 
         for (int ei = 0; ei < cast(int)face.pointIndices.length; ei++) {
@@ -3698,8 +3702,8 @@ int main()
                     const editChunkOffset = getChunkWorldOffset(placedChunks[editingChunkIndex]);
                     float wallT = float.infinity;
                     float autoT = float.infinity;
-                    const pickedWallIndex = findExplicitWallHitByRay(chunkGeometries[editingChunkIndex], pickRay, editChunkOffset, wallT);
-                    const pickedAutoFaceIndex = findAutoWallFaceHitByRay(chunkGeometries[editingChunkIndex], pickRay, editChunkOffset, autoT);
+                    const pickedWallIndex = findExplicitWallHitByRay(chunkGeometries[editingChunkIndex], pickRay, editChunkOffset, wallT, currentChunkLayer);
+                    const pickedAutoFaceIndex = findAutoWallFaceHitByRay(chunkGeometries[editingChunkIndex], pickRay, editChunkOffset, autoT, currentChunkLayer);
                     if (pickedWallIndex >= 0 && wallT <= autoT) {
                         selectedWallIndices = [pickedWallIndex];
                         selectedFaceIndices.length = 0;
@@ -3871,7 +3875,7 @@ int main()
                             chunkEditorMessage = to!string(TextFormat("Selected %d point(s).", cast(int)selectedPointIndices.length));
                             PlaySound(clickSound);
                         } else {
-                            const wallIndex = findWallAtWorldPosition(chunkGeometries[editingChunkIndex], worldPosition, 7.0f / chunkEditorCamera.zoom);
+                            const wallIndex = findWallAtWorldPosition(chunkGeometries[editingChunkIndex], worldPosition, 7.0f / chunkEditorCamera.zoom, currentChunkLayer);
                             if (wallIndex >= 0) {
                                 if (selectedWallIndicesContain(selectedWallIndices, wallIndex)) {
                                     selectedWallIndices = selectedWallIndices.filter!(index => index != wallIndex).array;
@@ -3885,7 +3889,7 @@ int main()
                                 chunkEditorMessage = to!string(TextFormat("Selected %d wall(s).", cast(int)selectedWallIndices.length));
                                 PlaySound(applySound);
                             } else {
-                                const faceIndex = findFaceAtWorldPosition(chunkGeometries[editingChunkIndex], worldPosition, 14.0f / chunkEditorCamera.zoom);
+                                const faceIndex = findFaceAtWorldPosition(chunkGeometries[editingChunkIndex], worldPosition, 14.0f / chunkEditorCamera.zoom, currentChunkLayer);
                                 if (faceIndex >= 0) {
                                     if (selectedFaceIndicesContain(selectedFaceIndices, faceIndex)) {
                                         selectedFaceIndices = selectedFaceIndices.filter!(index => index != faceIndex).array;
@@ -3926,6 +3930,16 @@ int main()
                         foreach (pointIndex, point; chunkGeometries[editingChunkIndex].points) {
                             if (CheckCollisionPointRec(getChunkPointPosition(point), boxSelectRect)) {
                                 boxSelectedPointIndices ~= cast(int)pointIndex;
+                            }
+                        }
+
+                        // Only box-select faces and walls on the active layer
+                        int[] boxSelectedFaceIndices;
+                        foreach (faceIndex, face; chunkGeometries[editingChunkIndex].faces) {
+                            if (face.layer != currentChunkLayer) continue;
+                            const centroid = getFaceCentroid(chunkGeometries[editingChunkIndex], face);
+                            if (CheckCollisionPointRec(centroid, boxSelectRect)) {
+                                boxSelectedFaceIndices ~= cast(int)faceIndex;
                             }
                         }
 
