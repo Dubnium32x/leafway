@@ -926,6 +926,40 @@ private void drawFilledFace(ChunkGeometry geometry, ChunkFace face, Color fillCo
     }
 }
 
+private void drawPixelatedPaletteFace(ChunkGeometry geometry, ChunkFace face, Image ditherImage, float opacity, Vector2 offset = Vector2.zero)
+{
+    auto polygonPoints = getFacePolygonPoints(geometry, face, offset);
+    if (polygonPoints.length < 3) {
+        return;
+    }
+
+    int minX = cast(int)floor(polygonPoints[0].x);
+    int maxX = cast(int)floor(polygonPoints[0].x);
+    int minY = cast(int)floor(polygonPoints[0].y);
+    int maxY = cast(int)floor(polygonPoints[0].y);
+
+    foreach (point; polygonPoints) {
+        const pointX = cast(int)floor(point.x);
+        const pointY = cast(int)floor(point.y);
+        if (pointX < minX) minX = pointX;
+        if (pointX > maxX) maxX = pointX;
+        if (pointY < minY) minY = pointY;
+        if (pointY > maxY) maxY = pointY;
+    }
+
+    for (int y = minY; y <= maxY; y++) {
+        for (int x = minX; x <= maxX; x++) {
+            const samplePoint = Vector2(x + 0.5f, y + 0.5f);
+            if (!pointInPolygon(samplePoint, polygonPoints)) {
+                continue;
+            }
+
+            const palettePixel = getPalettePixel(ditherImage, face.paletteIndex, x, y);
+            DrawPixel(x, y, Fade(palettePixel, opacity));
+        }
+    }
+}
+
 private void drawPaletteFace(ChunkGeometry geometry, ChunkFace face, Image ditherImage, float opacity, Vector2 offset = Vector2.zero)
 {
     const baseColor = getPalettePreviewColor(ditherImage, face.paletteIndex);
@@ -1597,6 +1631,7 @@ private void drawChunkEditorCanvas(
     bool isBoxSelecting,
     Rectangle boxSelectRect,
     bool showGrid,
+    bool showChunkPixelPreview,
     ChunkEditorTool editorTool,
     int currentChunkLayer,
 )
@@ -1704,7 +1739,11 @@ private void drawChunkEditorCanvas(
         const isActiveLayer = face.layer == currentChunkLayer;
         const faceDim = isActiveLayer ? 1.0f : 0.28f;
         const edgeColor = isSelected ? Fade(Colors.GOLD, 0.96f * faceDim) : Fade(Colors.WHITE, 0.86f * faceDim);
-        drawPaletteFace(geometry, face, ditherImage, (isSelected ? 0.36f : 0.26f) * faceDim);
+        if (showChunkPixelPreview && isActiveLayer) {
+            drawPixelatedPaletteFace(geometry, face, ditherImage, (isSelected ? 0.36f : 0.26f) * faceDim);
+        } else {
+            drawPaletteFace(geometry, face, ditherImage, (isSelected ? 0.36f : 0.26f) * faceDim);
+        }
         if (isSelected) {
             drawFilledFace(geometry, face, Fade(Colors.GOLD, 0.12f * faceDim));
         }
@@ -3265,6 +3304,7 @@ int main()
     bool showGrid = true;
     bool showInspector = true;
     bool showChunkBounds = false;
+    bool showChunkPixelPreview = true;
     MapChunk[] placedChunks;
     ChunkGeometry[] chunkGeometries;
     Camera2D mapCamera = Camera2D(Vector2.zero, Vector2.zero, 0.0f, 1.0f);
@@ -4064,6 +4104,12 @@ int main()
             const layerLabelWidth = cast(float)MeasureText(TextFormat("Layer: %d", currentChunkLayer), 20) + 16.0f;
             const layerControlWidth = layerLabelWidth + layerBtnSize * 2.0f + toolbarPadding * 2.0f;
             const layerControlX = cast(float)GetScreenWidth() - layerControlWidth - toolbarPadding;
+            const pixelToggleWidth = 92.0f;
+            const pixelToggleX = layerControlX - pixelToggleWidth - toolbarPadding;
+            if (GuiButton(Rectangle(pixelToggleX, toolbarPadding, pixelToggleWidth, layerBtnSize), showChunkPixelPreview ? "Pixels: On" : "Pixels: Off")) {
+                showChunkPixelPreview = !showChunkPixelPreview;
+                PlaySound(clickSound);
+            }
             GuiLabel(Rectangle(layerControlX, toolbarPadding, layerLabelWidth, layerBtnSize), TextFormat("Layer: %d", currentChunkLayer));
             if (GuiButton(Rectangle(layerControlX + layerLabelWidth + toolbarPadding, toolbarPadding, layerBtnSize, layerBtnSize), "-")) {
                 if (currentChunkLayer > 0) currentChunkLayer--;
@@ -4187,6 +4233,7 @@ int main()
                     isBoxSelecting,
                     getNormalizedRectangleFromPoints(boxSelectStartWorld, boxSelectEndWorld),
                     showGrid,
+                    showChunkPixelPreview,
                     chunkEditorTool,
                     currentChunkLayer
                 );
