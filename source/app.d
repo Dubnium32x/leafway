@@ -928,56 +928,44 @@ private void drawFilledFace(ChunkGeometry geometry, ChunkFace face, Color fillCo
 
 private void drawPaletteFace(ChunkGeometry geometry, ChunkFace face, Image ditherImage, float opacity, Vector2 offset = Vector2.zero)
 {
-    auto polygonPoints = getFacePolygonPoints(geometry, face, offset);
-    if (polygonPoints.length < 3) {
-        return;
-    }
-
-    int minX = cast(int)floor(polygonPoints[0].x);
-    int maxX = cast(int)floor(polygonPoints[0].x);
-    int minY = cast(int)floor(polygonPoints[0].y);
-    int maxY = cast(int)floor(polygonPoints[0].y);
-
-    foreach (point; polygonPoints) {
-        const pointX = cast(int)floor(point.x);
-        const pointY = cast(int)floor(point.y);
-        if (pointX < minX) minX = pointX;
-        if (pointX > maxX) maxX = pointX;
-        if (pointY < minY) minY = pointY;
-        if (pointY > maxY) maxY = pointY;
-    }
-
-    for (int y = minY; y <= maxY; y++) {
-        for (int x = minX; x <= maxX; x++) {
-            const samplePoint = Vector2(x + 0.5f, y + 0.5f);
-            if (!pointInPolygon(samplePoint, polygonPoints)) {
-                continue;
-            }
-
-            const palettePixel = getPalettePixel(ditherImage, face.paletteIndex, x, y);
-            DrawPixel(x, y, Fade(palettePixel, opacity));
-        }
-    }
+    const baseColor = getPalettePreviewColor(ditherImage, face.paletteIndex);
+    drawFilledFace(geometry, face, Fade(baseColor, opacity), offset);
 }
 
 private Color getPalettePreviewColor(Image ditherImage, int paletteIndex)
 {
-    const tileSize = getPaletteTileSize(ditherImage);
-    if (tileSize <= 0) {
+    static Color[] cachedColors;
+    static int cachedWidth = -1;
+    static int cachedHeight = -1;
+
+    const paletteCount = getPaletteCount(ditherImage);
+    if (paletteCount <= 0) {
         return Colors.LIGHTGRAY;
     }
 
-    const tileOrigin = getPaletteTileOrigin(ditherImage, paletteIndex);
-    int brightnessSum = 0;
-    for (int y = 0; y < tileSize; y++) {
-        for (int x = 0; x < tileSize; x++) {
-            const pixel = GetImageColor(ditherImage, cast(int)tileOrigin.x + x, cast(int)tileOrigin.y + y);
-            brightnessSum += pixel.r;
+    if (cachedWidth != ditherImage.width || cachedHeight != ditherImage.height || cachedColors.length != paletteCount) {
+        cachedWidth = ditherImage.width;
+        cachedHeight = ditherImage.height;
+        cachedColors.length = paletteCount;
+
+        const tileSize = getPaletteTileSize(ditherImage);
+        for (int palette = 0; palette < paletteCount; palette++) {
+            const tileOrigin = getPaletteTileOrigin(ditherImage, palette);
+            int brightnessSum = 0;
+            for (int y = 0; y < tileSize; y++) {
+                for (int x = 0; x < tileSize; x++) {
+                    const pixel = GetImageColor(ditherImage, cast(int)tileOrigin.x + x, cast(int)tileOrigin.y + y);
+                    brightnessSum += pixel.r;
+                }
+            }
+
+            const averageBrightness = cast(ubyte)(brightnessSum / (tileSize * tileSize));
+            cachedColors[palette] = Color(averageBrightness, averageBrightness, averageBrightness, 255);
         }
     }
 
-    const averageBrightness = cast(ubyte)(brightnessSum / (tileSize * tileSize));
-    return Color(averageBrightness, averageBrightness, averageBrightness, 255);
+    const safePaletteIndex = positiveModulo(paletteIndex, paletteCount);
+    return cachedColors[safePaletteIndex];
 }
 
 private void drawPaletteSwatch(Texture2D ditherTexture, Image ditherImage, int paletteIndex, Rectangle destRect, Rectangle outerScissorRect)
@@ -1539,6 +1527,10 @@ private void drawMapCanvas(
         const chunkRect = getChunkRect(chunk, gridLayout);
         const isSelected = cast(int)index == selectedChunkIndex;
 
+        if (!CheckCollisionRecs(chunkRect, visibleWorldRect)) {
+            continue;
+        }
+
         DrawRectangleRec(chunkRect, Fade(Colors.DARKBLUE, isSelected ? 0.60f : 0.42f));
 
         if (index < chunkGeometries.length) {
@@ -1665,6 +1657,10 @@ private void drawChunkEditorCanvas(
             otherChunk.width * gridLayout.cellSize,
             otherChunk.height * gridLayout.cellSize
         );
+
+        if (!CheckCollisionRecs(otherChunkRect, visibleWorldRect)) {
+            continue;
+        }
 
         DrawRectangleRec(otherChunkRect, Fade(Colors.DARKBLUE, 0.10f));
 
@@ -1794,14 +1790,15 @@ private void drawChunkEditorCanvas(
         
         DrawCircleV(entityPosition, 1.5f / gridLayout.camera.zoom, Fade(Colors.BLACK, 0.85f * entityDim));
         
-        // Draw entity info text
-        const textOffset = Vector2(0, -radius - 12.0f / gridLayout.camera.zoom);
-        const textPos = Vector2(entityPosition.x + textOffset.x, entityPosition.y + textOffset.y);
-        const typeText = getEntityTypeName(entity.type);
-        const fontSize = 14.0f / gridLayout.camera.zoom;
-        const textWidth = MeasureTextEx(GetFontDefault(), typeText.ptr, fontSize, fontSize / 10.0f).x;
-        DrawTextPro(GetFontDefault(), typeText.ptr, Vector2(textPos.x - textWidth / 2, textPos.y), Vector2(0, 0), 0.0f, fontSize, fontSize / 10.0f, Fade(Colors.BLACK, 0.95f * entityDim));
-        DrawTextPro(GetFontDefault(), typeText.ptr, Vector2(textPos.x - textWidth / 2 - 1.0f / gridLayout.camera.zoom, textPos.y - 1.0f / gridLayout.camera.zoom), Vector2(0, 0), 0.0f, fontSize, fontSize / 10.0f, Fade(Colors.WHITE, 0.95f * entityDim));
+        if (gridLayout.camera.zoom >= 1.1f || isSelected) {
+            const textOffset = Vector2(0, -radius - 12.0f / gridLayout.camera.zoom);
+            const textPos = Vector2(entityPosition.x + textOffset.x, entityPosition.y + textOffset.y);
+            const typeText = getEntityTypeName(entity.type);
+            const fontSize = 14.0f / gridLayout.camera.zoom;
+            const textWidth = MeasureTextEx(GetFontDefault(), typeText.ptr, fontSize, fontSize / 10.0f).x;
+            DrawTextPro(GetFontDefault(), typeText.ptr, Vector2(textPos.x - textWidth / 2, textPos.y), Vector2(0, 0), 0.0f, fontSize, fontSize / 10.0f, Fade(Colors.BLACK, 0.95f * entityDim));
+            DrawTextPro(GetFontDefault(), typeText.ptr, Vector2(textPos.x - textWidth / 2 - 1.0f / gridLayout.camera.zoom, textPos.y - 1.0f / gridLayout.camera.zoom), Vector2(0, 0), 0.0f, fontSize, fontSize / 10.0f, Fade(Colors.WHITE, 0.95f * entityDim));
+        }
     }
 
     foreach (objectIndex, obj; geometry.objects) {
@@ -1878,15 +1875,16 @@ private void drawChunkEditorCanvas(
         
         DrawCircleV(objectPosition, 1.5f / gridLayout.camera.zoom, Fade(Colors.BLACK, 0.85f * objectDim));
         
-        // Draw object info text
-        const textOffset = Vector2(0, -radius - 12.0f / gridLayout.camera.zoom);
-        const textPos = Vector2(objectPosition.x + textOffset.x, objectPosition.y + textOffset.y);
-        const typeText = getObjectTypeName(obj.type);
-        const heightText = to!string(TextFormat("%s (Y:%.1f)", typeText.ptr, obj.y));
-        const fontSize = 14.0f / gridLayout.camera.zoom;
-        const textWidth = MeasureTextEx(GetFontDefault(), heightText.ptr, fontSize, fontSize / 10.0f).x;
-        DrawTextPro(GetFontDefault(), heightText.ptr, Vector2(textPos.x - textWidth / 2, textPos.y), Vector2(0, 0), 0.0f, fontSize, fontSize / 10.0f, Fade(Colors.BLACK, 0.95f * objectDim));
-        DrawTextPro(GetFontDefault(), heightText.ptr, Vector2(textPos.x - textWidth / 2 - 1.0f / gridLayout.camera.zoom, textPos.y - 1.0f / gridLayout.camera.zoom), Vector2(0, 0), 0.0f, fontSize, fontSize / 10.0f, Fade(Colors.WHITE, 0.95f * objectDim));
+        if (gridLayout.camera.zoom >= 1.1f || isSelected) {
+            const textOffset = Vector2(0, -radius - 12.0f / gridLayout.camera.zoom);
+            const textPos = Vector2(objectPosition.x + textOffset.x, objectPosition.y + textOffset.y);
+            const typeText = getObjectTypeName(obj.type);
+            const heightText = to!string(TextFormat("%s (Y:%.1f)", typeText.ptr, obj.y));
+            const fontSize = 14.0f / gridLayout.camera.zoom;
+            const textWidth = MeasureTextEx(GetFontDefault(), heightText.ptr, fontSize, fontSize / 10.0f).x;
+            DrawTextPro(GetFontDefault(), heightText.ptr, Vector2(textPos.x - textWidth / 2, textPos.y), Vector2(0, 0), 0.0f, fontSize, fontSize / 10.0f, Fade(Colors.BLACK, 0.95f * objectDim));
+            DrawTextPro(GetFontDefault(), heightText.ptr, Vector2(textPos.x - textWidth / 2 - 1.0f / gridLayout.camera.zoom, textPos.y - 1.0f / gridLayout.camera.zoom), Vector2(0, 0), 0.0f, fontSize, fontSize / 10.0f, Fade(Colors.WHITE, 0.95f * objectDim));
+        }
     }
 
     foreach (pointIndex, point; geometry.points) {
@@ -3215,6 +3213,72 @@ private void drawWrappedLabel(Rectangle bounds, string text)
     }
 }
 
+private ulong mixPreviewHash(ulong hash, long value)
+{
+    return (hash ^ cast(ulong)value) * 1099511628211UL;
+}
+
+private long quantizePreviewFloat(float value)
+{
+    return cast(long)(value * 100.0f);
+}
+
+private ulong getChunkGeometryFingerprint(ChunkGeometry geometry)
+{
+    ulong hash = 1469598103934665603UL;
+
+    hash = mixPreviewHash(hash, cast(long)geometry.points.length);
+    foreach (point; geometry.points) {
+        hash = mixPreviewHash(hash, cast(long)point.x);
+        hash = mixPreviewHash(hash, cast(long)point.z);
+    }
+
+    hash = mixPreviewHash(hash, cast(long)geometry.faces.length);
+    foreach (face; geometry.faces) {
+        hash = mixPreviewHash(hash, cast(long)face.pointIndices.length);
+        foreach (pointIndex; face.pointIndices) {
+            hash = mixPreviewHash(hash, cast(long)pointIndex);
+        }
+        hash = mixPreviewHash(hash, cast(long)face.floorHeight);
+        hash = mixPreviewHash(hash, cast(long)face.ceilingHeight);
+        hash = mixPreviewHash(hash, cast(long)face.paletteIndex);
+        hash = mixPreviewHash(hash, cast(long)face.layer);
+        hash = mixPreviewHash(hash, face.autoWallFromHeightDifference ? 1L : 0L);
+        hash = mixPreviewHash(hash, face.sameFloorAndCeiling ? 1L : 0L);
+    }
+
+    hash = mixPreviewHash(hash, cast(long)geometry.walls.length);
+    foreach (wall; geometry.walls) {
+        hash = mixPreviewHash(hash, cast(long)wall.startPointIndex);
+        hash = mixPreviewHash(hash, cast(long)wall.endPointIndex);
+        hash = mixPreviewHash(hash, cast(long)wall.floorHeight);
+        hash = mixPreviewHash(hash, cast(long)wall.ceilingHeight);
+        hash = mixPreviewHash(hash, cast(long)wall.paletteIndex);
+        hash = mixPreviewHash(hash, cast(long)wall.layer);
+    }
+
+    hash = mixPreviewHash(hash, cast(long)geometry.entities.length);
+    foreach (entity; geometry.entities) {
+        hash = mixPreviewHash(hash, quantizePreviewFloat(entity.x));
+        hash = mixPreviewHash(hash, quantizePreviewFloat(entity.z));
+        hash = mixPreviewHash(hash, quantizePreviewFloat(entity.rotationY));
+        hash = mixPreviewHash(hash, cast(long)entity.type);
+        hash = mixPreviewHash(hash, cast(long)entity.layer);
+    }
+
+    hash = mixPreviewHash(hash, cast(long)geometry.objects.length);
+    foreach (obj; geometry.objects) {
+        hash = mixPreviewHash(hash, quantizePreviewFloat(obj.x));
+        hash = mixPreviewHash(hash, quantizePreviewFloat(obj.y));
+        hash = mixPreviewHash(hash, quantizePreviewFloat(obj.z));
+        hash = mixPreviewHash(hash, quantizePreviewFloat(obj.rotationY));
+        hash = mixPreviewHash(hash, cast(long)obj.type);
+        hash = mixPreviewHash(hash, cast(long)obj.layer);
+    }
+
+    return hash;
+}
+
 int main()
 {
     SetExitKey(KeyboardKey.KEY_NULL); // Disable default exit key so ESC never closes the window
@@ -3274,6 +3338,12 @@ int main()
     float chunkPreviewYaw = 0.75f;
     float chunkPreviewPitch = 0.55f;
     float chunkPreviewDistance = 220.0f;
+    float lastChunkPreviewYaw = -1000.0f;
+    float lastChunkPreviewPitch = -1000.0f;
+    float lastChunkPreviewDistance = -1000.0f;
+    int lastPreviewChunkIndex = -1;
+    AppScreen lastPreviewScreen = AppScreen.map;
+    ulong lastChunkPreviewFingerprint = 0UL;
     ChunkTool activeChunkTool = ChunkTool.draw;
     int selectedChunkIndex = -1;
     int editingChunkIndex = -1;
@@ -3335,7 +3405,7 @@ int main()
         const inspectorRect = getInspectorRect();
         const chunkPreviewPanelRect = getChunkPreviewPanelRect(canvasRect);
         const chunkPreviewContentRect = getChunkPreviewContentRect(chunkPreviewPanelRect);
-        const chunkPreviewBounds = (appScreen == AppScreen.chunkEditor && editingChunkIndex >= 0 && editingChunkIndex < cast(int)placedChunks.length)
+        auto chunkPreviewBounds = (appScreen == AppScreen.chunkEditor && editingChunkIndex >= 0 && editingChunkIndex < cast(int)placedChunks.length)
             ? getChunkPreviewBounds(
                 [placedChunks[editingChunkIndex]],
                 editingChunkIndex < cast(int)chunkGeometries.length ? [chunkGeometries[editingChunkIndex]] : cast(ChunkGeometry[])[])
@@ -4193,8 +4263,28 @@ int main()
                     currentChunkLayer
                 );
 
-                const previewCamera = getChunkPreviewCamera(chunkPreviewBounds, chunkPreviewYaw, chunkPreviewPitch, chunkPreviewDistance);
-                renderChunkPreview3D(chunkPreviewTexture, previewCamera, placedChunks, chunkGeometries, editingChunkIndex, chunkPreviewBounds, ditherImage);
+                auto previewCamera = getChunkPreviewCamera(chunkPreviewBounds, chunkPreviewYaw, chunkPreviewPitch, chunkPreviewDistance);
+                auto previewChunkData = [placedChunks[editingChunkIndex]];
+                auto previewGeometryData = [chunkGeometries[editingChunkIndex]];
+                const previewCameraChanged = absFloat(chunkPreviewYaw - lastChunkPreviewYaw) > 0.0001f
+                    || absFloat(chunkPreviewPitch - lastChunkPreviewPitch) > 0.0001f
+                    || absFloat(chunkPreviewDistance - lastChunkPreviewDistance) > 0.25f;
+                const previewGeometryFingerprint = getChunkGeometryFingerprint(chunkGeometries[editingChunkIndex]);
+                const previewNeedsRedraw = appScreen != lastPreviewScreen
+                    || editingChunkIndex != lastPreviewChunkIndex
+                    || previewCameraChanged
+                    || previewGeometryFingerprint != lastChunkPreviewFingerprint;
+
+                if (previewNeedsRedraw) {
+                    renderChunkPreview3D(chunkPreviewTexture, previewCamera, previewChunkData, previewGeometryData, 0, chunkPreviewBounds, ditherImage);
+                    lastChunkPreviewYaw = chunkPreviewYaw;
+                    lastChunkPreviewPitch = chunkPreviewPitch;
+                    lastChunkPreviewDistance = chunkPreviewDistance;
+                    lastPreviewChunkIndex = editingChunkIndex;
+                    lastPreviewScreen = appScreen;
+                    lastChunkPreviewFingerprint = previewGeometryFingerprint;
+                }
+
                 GuiPanel(chunkPreviewPanelRect, "3D Preview");
                 DrawTexturePro(
                     chunkPreviewTexture.texture,
