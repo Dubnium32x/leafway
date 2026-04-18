@@ -156,6 +156,7 @@ struct GridLayout {
     Rectangle canvasRect;
     Camera2D camera;
     float cellSize;
+    float snapSize;
 }
 
 struct PreviewWorldBounds {
@@ -220,7 +221,7 @@ private Rectangle getChunkPreviewContentRect(Rectangle panelRect)
 
 private GridLayout getGridLayout(Rectangle canvasRect, Camera2D camera, int snapSize = cast(int)mapGridCellSize)
 {
-    return GridLayout(canvasRect, camera, cast(float)snapSize);
+    return GridLayout(canvasRect, camera, mapGridCellSize, cast(float)snapSize);
 }
 
 private GridCell getGridCellAtPoint(Vector2 mousePosition, GridLayout gridLayout)
@@ -1475,13 +1476,13 @@ private void drawMapCanvas(
     DrawRectangleRec(visibleWorldRect, Fade(Colors.SKYBLUE, 0.08f));
 
     if (showGrid) {
-        const startColumn = cast(int)floor(minX / gridLayout.cellSize) - 1;
-        const endColumn = cast(int)floor(maxX / gridLayout.cellSize) + 1;
-        const startRow = cast(int)floor(minY / gridLayout.cellSize) - 1;
-        const endRow = cast(int)floor(maxY / gridLayout.cellSize) + 1;
+        const startColumn = cast(int)floor(minX / gridLayout.snapSize) - 1;
+        const endColumn = cast(int)floor(maxX / gridLayout.snapSize) + 1;
+        const startRow = cast(int)floor(minY / gridLayout.snapSize) - 1;
+        const endRow = cast(int)floor(maxY / gridLayout.snapSize) + 1;
 
         for (int column = startColumn; column <= endColumn; column++) {
-            const x = column * gridLayout.cellSize;
+            const x = column * gridLayout.snapSize;
             const isAxis = column == 0;
             const isMajor = positiveModulo(column, majorGridInterval) == 0;
             const lineColor = isAxis
@@ -1491,7 +1492,7 @@ private void drawMapCanvas(
         }
 
         for (int row = startRow; row <= endRow; row++) {
-            const y = row * gridLayout.cellSize;
+            const y = row * gridLayout.snapSize;
             const isAxis = row == 0;
             const isMajor = positiveModulo(row, majorGridInterval) == 0;
             const lineColor = isAxis
@@ -1596,19 +1597,19 @@ private void drawChunkEditorCanvas(
     DrawRectangleRec(visibleWorldRect, Fade(Colors.SKYBLUE, 0.05f));
 
     if (showGrid) {
-        const startColumn = cast(int)floor(minX / gridLayout.cellSize) - 1;
-        const endColumn = cast(int)floor(maxX / gridLayout.cellSize) + 1;
-        const startRow = cast(int)floor(minY / gridLayout.cellSize) - 1;
-        const endRow = cast(int)floor(maxY / gridLayout.cellSize) + 1;
+        const startColumn = cast(int)floor(minX / gridLayout.snapSize) - 1;
+        const endColumn = cast(int)floor(maxX / gridLayout.snapSize) + 1;
+        const startRow = cast(int)floor(minY / gridLayout.snapSize) - 1;
+        const endRow = cast(int)floor(maxY / gridLayout.snapSize) + 1;
 
         for (int column = startColumn; column <= endColumn; column++) {
-            const x = column * gridLayout.cellSize;
+            const x = column * gridLayout.snapSize;
             const isMajor = positiveModulo(column, majorGridInterval) == 0;
             DrawLineV(Vector2(x, minY), Vector2(x, maxY), isMajor ? Fade(Colors.RAYWHITE, 0.20f) : Fade(Colors.RAYWHITE, 0.08f));
         }
 
         for (int row = startRow; row <= endRow; row++) {
-            const y = row * gridLayout.cellSize;
+            const y = row * gridLayout.snapSize;
             const isMajor = positiveModulo(row, majorGridInterval) == 0;
             DrawLineV(Vector2(minX, y), Vector2(maxX, y), isMajor ? Fade(Colors.RAYWHITE, 0.20f) : Fade(Colors.RAYWHITE, 0.08f));
         }
