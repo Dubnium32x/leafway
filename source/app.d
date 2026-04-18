@@ -450,6 +450,35 @@ private int findWallAtWorldPosition(ChunkGeometry geometry, Vector2 worldPositio
     return -1;
 }
 
+// Returns the face index whose auto-wall edge is nearest to worldPosition within threshold,
+// or -1 if none. Selects the parent face so its properties can be edited.
+private int findAutoWallFaceAtEdge(ChunkGeometry geometry, Vector2 worldPosition, float threshold, int layer = -1)
+{
+    const thresholdSquared = threshold * threshold;
+
+    for (int faceIndex = cast(int)geometry.faces.length - 1; faceIndex >= 0; faceIndex--) {
+        const face = geometry.faces[faceIndex];
+        if (!face.autoWallFromHeightDifference) continue;
+        if (layer >= 0 && face.layer != layer) continue;
+        if (face.pointIndices.length < 2) continue;
+
+        for (int i = 0; i < cast(int)face.pointIndices.length; i++) {
+            const aIdx = face.pointIndices[i];
+            const bIdx = face.pointIndices[(i + 1) % cast(int)face.pointIndices.length];
+            if (aIdx < 0 || aIdx >= cast(int)geometry.points.length) continue;
+            if (bIdx < 0 || bIdx >= cast(int)geometry.points.length) continue;
+
+            const ptA = getChunkPointPosition(geometry.points[aIdx]);
+            const ptB = getChunkPointPosition(geometry.points[bIdx]);
+            if (distanceSquaredToSegment(worldPosition, ptA, ptB) <= thresholdSquared) {
+                return faceIndex;
+            }
+        }
+    }
+
+    return -1;
+}
+
 private bool pointIsUsedByFace(ChunkGeometry geometry, int pointIndex)
 {
     foreach (face; geometry.faces) {
@@ -3290,6 +3319,11 @@ int main()
     int batchFaceFloorValue = 0;
     int batchFaceCeilingValue = 16;
     int batchFacePaletteValue = 0;
+    int batchWallFloorValue = 0;
+    int batchWallCeilingValue = 16;
+    bool batchWallFloorEditMode = false;
+    bool batchWallCeilingEditMode = false;
+    int batchWallPaletteValue = 0;
     string chunkEditorMessage = "Point mode: click to place snapped points inside the chunk bounds.";
     bool shouldExit = false;
     bool showAboutDialog = false;
@@ -3891,7 +3925,11 @@ int main()
                                 chunkEditorMessage = to!string(TextFormat("Selected %d wall(s).", cast(int)selectedWallIndices.length));
                                 PlaySound(applySound);
                             } else {
-                                const faceIndex = findFaceAtWorldPosition(chunkGeometries[editingChunkIndex], worldPosition, 14.0f / chunkEditorCamera.zoom, currentChunkLayer);
+                                // Check auto-wall face edges before checking face interiors
+                                const autoWallFaceIndex = findAutoWallFaceAtEdge(chunkGeometries[editingChunkIndex], worldPosition, 7.0f / chunkEditorCamera.zoom, currentChunkLayer);
+                                const faceIndex = autoWallFaceIndex >= 0
+                                    ? autoWallFaceIndex
+                                    : findFaceAtWorldPosition(chunkGeometries[editingChunkIndex], worldPosition, 14.0f / chunkEditorCamera.zoom, currentChunkLayer);
                                 if (faceIndex >= 0) {
                                     if (selectedFaceIndicesContain(selectedFaceIndices, faceIndex)) {
                                         selectedFaceIndices = selectedFaceIndices.filter!(index => index != faceIndex).array;
@@ -3902,7 +3940,7 @@ int main()
                                     selectedWallIndices.length = 0;
                                     selectedEntityIndices.length = 0;
                                     chunkEditorMessage = to!string(TextFormat("Selected %d face(s).", cast(int)selectedFaceIndices.length));
-                                    PlaySound(clickSound);
+                                    PlaySound(autoWallFaceIndex >= 0 ? applySound : clickSound);
                                 } else {
                                     isBoxSelecting = true;
                                     boxSelectStartWorld = worldPosition;
@@ -4691,6 +4729,90 @@ int main()
                         }
                     }
 
+                    if (selectedWallIndices.length > 1) {
+                        GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(300.0f), inspectorRect.width - 32.0f, 24.0f), TextFormat("Apply To %d Walls", cast(int)selectedWallIndices.length));
+                        GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(324.0f), 42.0f, 24.0f), "Floor");
+                        if (GuiValueBox(Rectangle(inspectorRect.x + 58.0f, iy(322.0f), 56.0f, 24.0f), null, &batchWallFloorValue, -512, 1024, batchWallFloorEditMode) == 1) {
+                            batchWallFloorEditMode = !batchWallFloorEditMode;
+                        }
+                        if (GuiButton(Rectangle(inspectorRect.x + 118.0f, iy(322.0f), 24.0f, 24.0f), "-")) {
+                            batchWallFloorValue--;
+                            PlaySound(clickSound);
+                        }
+                        if (GuiButton(Rectangle(inspectorRect.x + 146.0f, iy(322.0f), 24.0f, 24.0f), "+")) {
+                            batchWallFloorValue++;
+                            PlaySound(clickSound);
+                        }
+                        if (GuiButton(Rectangle(inspectorRect.x + 176.0f, iy(322.0f), 68.0f, 24.0f), "Apply")) {
+                            pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
+                            const clampedWallFloor = clampInt(batchWallFloorValue, -512, 1024);
+                            foreach (wi; selectedWallIndices) {
+                                if (wi >= 0 && wi < cast(int)chunkGeometries[editingChunkIndex].walls.length) {
+                                    chunkGeometries[editingChunkIndex].walls[wi].floorHeight = clampedWallFloor;
+                                }
+                            }
+                            batchWallFloorValue = clampedWallFloor;
+                            chunkEditorMessage = "Applied floor height to selected walls.";
+                            PlaySound(clickSound);
+                        }
+
+                        GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(352.0f), 42.0f, 24.0f), "Ceil");
+                        if (GuiValueBox(Rectangle(inspectorRect.x + 58.0f, iy(350.0f), 56.0f, 24.0f), null, &batchWallCeilingValue, -512, 1024, batchWallCeilingEditMode) == 1) {
+                            batchWallCeilingEditMode = !batchWallCeilingEditMode;
+                        }
+                        if (GuiButton(Rectangle(inspectorRect.x + 118.0f, iy(350.0f), 24.0f, 24.0f), "-")) {
+                            batchWallCeilingValue--;
+                            PlaySound(clickSound);
+                        }
+                        if (GuiButton(Rectangle(inspectorRect.x + 146.0f, iy(350.0f), 24.0f, 24.0f), "+")) {
+                            batchWallCeilingValue++;
+                            PlaySound(clickSound);
+                        }
+                        if (GuiButton(Rectangle(inspectorRect.x + 176.0f, iy(350.0f), 68.0f, 24.0f), "Apply")) {
+                            pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
+                            const clampedWallCeil = clampInt(batchWallCeilingValue, -512, 1024);
+                            foreach (wi; selectedWallIndices) {
+                                if (wi >= 0 && wi < cast(int)chunkGeometries[editingChunkIndex].walls.length) {
+                                    auto wall = &chunkGeometries[editingChunkIndex].walls[wi];
+                                    wall.ceilingHeight = clampedWallCeil >= wall.floorHeight ? clampedWallCeil : wall.floorHeight;
+                                }
+                            }
+                            batchWallCeilingValue = clampedWallCeil;
+                            chunkEditorMessage = "Applied ceiling height to selected walls.";
+                            PlaySound(clickSound);
+                        }
+
+                        GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(380.0f), 56.0f, 24.0f), "Palette");
+                        GuiLabel(Rectangle(inspectorRect.x + 72.0f, iy(380.0f), 40.0f, 24.0f), TextFormat("%d", batchWallPaletteValue));
+                        if (GuiButton(Rectangle(inspectorRect.x + 114.0f, iy(378.0f), 24.0f, 24.0f), "-")) {
+                            if (batchWallPaletteValue > 0) {
+                                batchWallPaletteValue--;
+                                PlaySound(clickSound);
+                            } else {
+                                PlaySound(touchSound);
+                            }
+                        }
+                        if (GuiButton(Rectangle(inspectorRect.x + 144.0f, iy(378.0f), 24.0f, 24.0f), "+")) {
+                            if (batchWallPaletteValue < paletteCount - 1) {
+                                batchWallPaletteValue++;
+                                PlaySound(clickSound);
+                            } else {
+                                PlaySound(touchSound);
+                            }
+                        }
+                        if (GuiButton(Rectangle(inspectorRect.x + 176.0f, iy(378.0f), 68.0f, 24.0f), "Apply")) {
+                            pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
+                            foreach (wi; selectedWallIndices) {
+                                if (wi >= 0 && wi < cast(int)chunkGeometries[editingChunkIndex].walls.length) {
+                                    chunkGeometries[editingChunkIndex].walls[wi].paletteIndex = batchWallPaletteValue;
+                                }
+                            }
+                            chunkEditorMessage = "Applied palette to selected walls.";
+                            PlaySound(applySound);
+                        }
+                        drawPaletteSwatch(ditherTexture, ditherImage, batchWallPaletteValue, Rectangle(inspectorRect.x + 16.0f, iy(408.0f), inspectorRect.width - 32.0f, 24.0f), contentAreaRect);
+                    }
+
                     if (selectedWallIndices.length == 1) {
                         const selectedWallIndex = selectedWallIndices[0];
                         if (selectedWallIndex >= 0 && selectedWallIndex < cast(int)chunkGeometries[editingChunkIndex].walls.length) {
@@ -4698,25 +4820,34 @@ int main()
                             GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(300.0f), inspectorRect.width - 32.0f, 24.0f), TextFormat("Wall %d: %d -> %d", selectedWallIndex + 1, wall.startPointIndex + 1, wall.endPointIndex + 1));
                             GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(324.0f), 72.0f, 24.0f), TextFormat("Floor: %d", wall.floorHeight));
                             if (GuiButton(Rectangle(inspectorRect.x + 94.0f, iy(322.0f), 24.0f, 24.0f), "-")) {
+                                pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
                                 wall.floorHeight--;
                                 PlaySound(clickSound);
                             }
                             if (GuiButton(Rectangle(inspectorRect.x + 124.0f, iy(322.0f), 24.0f, 24.0f), "+")) {
+                                pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
                                 wall.floorHeight++;
                                 PlaySound(clickSound);
                             }
                             GuiLabel(Rectangle(inspectorRect.x + 156.0f, iy(324.0f), 80.0f, 24.0f), TextFormat("Ceil: %d", wall.ceilingHeight));
                             if (GuiButton(Rectangle(inspectorRect.x + 220.0f, iy(322.0f), 24.0f, 24.0f), "-")) {
-                                wall.ceilingHeight = wall.ceilingHeight > wall.floorHeight + 1 ? wall.ceilingHeight - 1 : wall.ceilingHeight;
-                                PlaySound(clickSound);
+                                if (wall.ceilingHeight > wall.floorHeight + 1) {
+                                    pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
+                                    wall.ceilingHeight--;
+                                    PlaySound(clickSound);
+                                } else {
+                                    PlaySound(touchSound);
+                                }
                             }
                             if (GuiButton(Rectangle(inspectorRect.x + 250.0f, iy(322.0f), 24.0f, 24.0f), "+")) {
+                                pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
                                 wall.ceilingHeight++;
                                 PlaySound(clickSound);
                             }
                             GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(352.0f), 96.0f, 24.0f), TextFormat("Palette: %d", wall.paletteIndex));
                             if (GuiButton(Rectangle(inspectorRect.x + 114.0f, iy(350.0f), 24.0f, 24.0f), "-")) {
                                 if (wall.paletteIndex > 0) {
+                                    pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
                                     wall.paletteIndex--;
                                     PlaySound(clickSound);
                                 } else {
@@ -4725,6 +4856,7 @@ int main()
                             }
                             if (GuiButton(Rectangle(inspectorRect.x + 144.0f, iy(350.0f), 24.0f, 24.0f), "+")) {
                                 if (wall.paletteIndex < paletteCount - 1) {
+                                    pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
                                     wall.paletteIndex++;
                                     PlaySound(clickSound);
                                 } else {
