@@ -3126,7 +3126,9 @@ private ChunkGeometry dupGeometry(const ChunkGeometry g)
     result.objects = g.objects.dup;
     result.faces.reserve(g.faces.length);
     foreach (f; g.faces) {
-        result.faces ~= ChunkFace(f.pointIndices.dup, f.floorHeight, f.ceilingHeight, f.paletteIndex, f.autoWallFromHeightDifference, f.sameFloorAndCeiling);
+        auto face = ChunkFace(f.pointIndices.dup, f.floorHeight, f.ceilingHeight, f.paletteIndex, f.autoWallFromHeightDifference, f.sameFloorAndCeiling);
+        face.layer = f.layer;
+        result.faces ~= face;
     }
     return result;
 }
