@@ -9,7 +9,7 @@ if (-not (Test-Path "raylib.dll")) {
 }
 
 Write-Host "Building Leafway for Windows..."
-dub build --build=release
+dub build --build=debug --parallel --verbose
 
 New-Item -ItemType Directory -Force -Path "dist/windows" | Out-Null
 Copy-Item "leafway.exe" "dist/windows/leafway.exe" -Force

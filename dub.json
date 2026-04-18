@@ -20,14 +20,12 @@
 		"opengl32",
 		"user32",
 		"shell32",
-		"advapi32",
-		"legacy_stdio_definitions"
+		"advapi32"
 	],
 	"lflags-windows": [
 		"/LIBPATH:."
 	],
-
-	"preBuildCommands": ["dub run raylib-d:install -- -q -u=no"],
+	
 	"description": "A 3D Map Editor for Playdate Games",
 	"license": "GPL-3.0",
 	"name": "leafway"
