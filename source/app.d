@@ -218,9 +218,9 @@ private Rectangle getChunkPreviewContentRect(Rectangle panelRect)
     return Rectangle(panelRect.x + 8.0f, panelRect.y + 24.0f, chunkPreviewTextureWidth, chunkPreviewTextureHeight);
 }
 
-private GridLayout getGridLayout(Rectangle canvasRect, Camera2D camera)
+private GridLayout getGridLayout(Rectangle canvasRect, Camera2D camera, int snapSize = cast(int)mapGridCellSize)
 {
-    return GridLayout(canvasRect, camera, mapGridCellSize);
+    return GridLayout(canvasRect, camera, cast(float)snapSize);
 }
 
 private GridCell getGridCellAtPoint(Vector2 mousePosition, GridLayout gridLayout)
@@ -309,12 +309,12 @@ private int findChunkAtCell(MapChunk[] placedChunks, GridCell cell)
     return -1;
 }
 
-private ChunkPoint getChunkPointAtWorldPosition(Vector2 worldPosition, MapChunk chunk)
+private ChunkPoint getChunkPointAtWorldPosition(Vector2 worldPosition, MapChunk chunk, int snapSize = cast(int)mapGridCellSize)
 {
     const maxX = chunk.width * cast(int)mapGridCellSize;
     const maxZ = chunk.height * cast(int)mapGridCellSize;
-    const snappedX = cast(int)floor(worldPosition.x / mapGridCellSize + 0.5f) * cast(int)mapGridCellSize;
-    const snappedZ = cast(int)floor(worldPosition.y / mapGridCellSize + 0.5f) * cast(int)mapGridCellSize;
+    const snappedX = cast(int)floor(worldPosition.x / snapSize + 0.5f) * snapSize;
+    const snappedZ = cast(int)floor(worldPosition.y / snapSize + 0.5f) * snapSize;
     return ChunkPoint(
         clampInt(snappedX, 0, maxX),
         clampInt(snappedZ, 0, maxZ)
@@ -948,6 +948,38 @@ private Color getPalettePreviewColor(Image ditherImage, int paletteIndex)
     return Color(averageBrightness, averageBrightness, averageBrightness, 255);
 }
 
+private void drawPaletteSwatch(Texture2D ditherTexture, Image ditherImage, int paletteIndex, Rectangle destRect, Rectangle outerScissorRect)
+{
+    const tileSize = getPaletteTileSize(ditherImage);
+    if (tileSize <= 0) return;
+    const tileOrigin = getPaletteTileOrigin(ditherImage, paletteIndex);
+    const sourceRect = Rectangle(tileOrigin.x, tileOrigin.y, cast(float)tileSize, cast(float)tileSize);
+    const tilesX = cast(int)(destRect.width  / cast(float)tileSize) + 2;
+    const tilesY = cast(int)(destRect.height / cast(float)tileSize) + 2;
+    DrawRectangleRec(destRect, Colors.WHITE);
+    for (int ty = 0; ty < tilesY; ty++) {
+        for (int tx = 0; tx < tilesX; tx++) {
+            const tileDestX = destRect.x + tx * tileSize;
+            const tileDestY = destRect.y + ty * tileSize;
+            // Clamp the tile dest to stay within destRect
+            const clipX1 = tileDestX < destRect.x ? destRect.x : tileDestX;
+            const clipY1 = tileDestY < destRect.y ? destRect.y : tileDestY;
+            const clipX2 = tileDestX + tileSize > destRect.x + destRect.width  ? destRect.x + destRect.width  : tileDestX + tileSize;
+            const clipY2 = tileDestY + tileSize > destRect.y + destRect.height ? destRect.y + destRect.height : tileDestY + tileSize;
+            if (clipX2 <= clipX1 || clipY2 <= clipY1) continue;
+            const srcOffX = clipX1 - tileDestX;
+            const srcOffY = clipY1 - tileDestY;
+            const clippedW = clipX2 - clipX1;
+            const clippedH = clipY2 - clipY1;
+            const clippedSrc = Rectangle(tileOrigin.x + srcOffX, tileOrigin.y + srcOffY, clippedW, clippedH);
+            DrawTexturePro(ditherTexture, clippedSrc, Rectangle(clipX1, clipY1, clippedW, clippedH), Vector2.zero, 0.0f, Colors.WHITE);
+        }
+    }
+    // Restore outer scissor that was active before this call
+    BeginScissorMode(cast(int)outerScissorRect.x, cast(int)outerScissorRect.y, cast(int)outerScissorRect.width, cast(int)outerScissorRect.height);
+    DrawRectangleLinesEx(destRect, 1.0f, Fade(Colors.DARKGRAY, 0.6f));
+}
+
 private bool faceHasEdge(ChunkFace face, int pointAIndex, int pointBIndex)
 {
     if (face.pointIndices.length < 2) {
@@ -1308,8 +1340,9 @@ private void renderChunkPreview3D(
     scope(exit) EndTextureMode();
 
     ClearBackground(Color(206, 220, 255, 255));
+    rlSetClipPlanes(0.01, 50000.0);
     BeginMode3D(camera);
-    scope(exit) EndMode3D();
+    scope(exit) { EndMode3D(); rlSetClipPlanes(RL_CULL_DISTANCE_NEAR, RL_CULL_DISTANCE_FAR); }
 
     const minX = bounds.horizontal.x;
     const maxX = bounds.horizontal.x + bounds.horizontal.width;
@@ -3159,6 +3192,8 @@ int main()
     Texture2D waterTexture = LoadTexture("resources/image/water.png");
     Image ditherImage = LoadImage("resources/image/dither.png");
     const paletteCount = getPaletteCount(ditherImage);
+    Texture2D ditherTexture = LoadTextureFromImage(ditherImage);
+    SetTextureFilter(ditherTexture, TextureFilter.TEXTURE_FILTER_POINT);
     RenderTexture2D chunkPreviewTexture = LoadRenderTexture(chunkPreviewTextureWidth, chunkPreviewTextureHeight);
     SetTextureFilter(waterTexture, TextureFilter.TEXTURE_FILTER_BILINEAR);
     SetTextureWrap(waterTexture, TextureWrap.TEXTURE_WRAP_REPEAT);
@@ -3217,7 +3252,7 @@ int main()
     MapSnapshot[] mapUndoStack;
     ChunkGeometry[] chunkUndoStack;
     int mapSnapMultiplier = 1;    // 1, 2, 4, 8 cells per snap unit
-    int chunkEditorSnapSize = 8;  // geometry snap in px: 2, 4, 8, 16, 32
+    int gridSnapSize = 8;  // geometry snap in px: 2, 4, 8, 16, 32
     string chunkToolMessage = "Draw mode: drag on the canvas to create a new chunk.";
     ChunkEditorTool chunkEditorTool = ChunkEditorTool.placePoint;
     int[] selectedPointIndices;
@@ -3247,6 +3282,7 @@ int main()
     bool batchFaceCeilingEditMode = false;
     int batchFaceFloorValue = 0;
     int batchFaceCeilingValue = 16;
+    int batchFacePaletteValue = 0;
     string chunkEditorMessage = "Point mode: click to place snapped points inside the chunk bounds.";
     bool shouldExit = false;
     bool showAboutDialog = false;
@@ -3273,7 +3309,7 @@ int main()
             chunkToolMessage = "Resize is disabled to preserve chunk geometry.";
         }
         mapCamera.offset = Vector2(canvasRect.x + canvasRect.width * 0.5f, canvasRect.y + canvasRect.height * 0.5f);
-        const gridLayout = getGridLayout(canvasRect, mapCamera);
+        const gridLayout = getGridLayout(canvasRect, mapCamera, gridSnapSize);
         const mousePosition = GetMousePosition();
 
         if (pendingOpenMapDialog) {
@@ -3740,7 +3776,7 @@ int main()
                 const editChunk = placedChunks[editingChunkIndex];
 
                 if (chunkEditorTool == ChunkEditorTool.placePoint) {
-                    const point = getChunkPointAtWorldPosition(worldPosition, editChunk);
+                    const point = getChunkPointAtWorldPosition(worldPosition, editChunk, gridSnapSize);
                     if (!chunkGeometryHasPoint(chunkGeometries[editingChunkIndex], point)) {
                         pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
                         chunkGeometries[editingChunkIndex].points ~= point;
@@ -4042,7 +4078,23 @@ int main()
                 }
 
                 drawWrappedLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 144.0f, inspectorRect.width - 32.0f, 56.0f), chunkToolMessage);
-                GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 206.0f, inspectorRect.width - 32.0f, 24.0f), TextFormat("Snap Size: %d px", cast(int)gridLayout.cellSize));
+                GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 206.0f, 82.0f, 24.0f), TextFormat("Snap: %d px", gridSnapSize));
+                if (GuiButton(Rectangle(inspectorRect.x + 100.0f, inspectorRect.y + 204.0f, 24.0f, 24.0f), "<")) {
+                    if (gridSnapSize > 2) {
+                        gridSnapSize /= 2;
+                        PlaySound(clickSound);
+                    } else {
+                        PlaySound(touchSound);
+                    }
+                }
+                if (GuiButton(Rectangle(inspectorRect.x + 130.0f, inspectorRect.y + 204.0f, 24.0f, 24.0f), ">")) {
+                    if (gridSnapSize < 32) {
+                        gridSnapSize *= 2;
+                        PlaySound(clickSound);
+                    } else {
+                        PlaySound(touchSound);
+                    }
+                }
                 GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 232.0f, inspectorRect.width - 32.0f, 24.0f), TextFormat("Chunks: %d", cast(int)placedChunks.length));
                 GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 258.0f, inspectorRect.width - 32.0f, 24.0f), TextFormat("Zoom: %d%%", cast(int)(mapCamera.zoom * 100.0f)));
                 GuiLabel(Rectangle(inspectorRect.x + 16.0f, inspectorRect.y + 284.0f, inspectorRect.width - 32.0f, 24.0f), TextFormat("Camera: %d, %d", cast(int)mapCamera.target.x, cast(int)mapCamera.target.y));
@@ -4062,7 +4114,7 @@ int main()
                 }
             } else if (editingChunkIndex >= 0 && editingChunkIndex < cast(int)placedChunks.length) {
                 chunkEditorCamera.offset = Vector2(canvasRect.x + canvasRect.width * 0.5f, canvasRect.y + canvasRect.height * 0.5f);
-                const chunkEditorLayout = getGridLayout(canvasRect, chunkEditorCamera);
+                const chunkEditorLayout = getGridLayout(canvasRect, chunkEditorCamera, gridSnapSize);
                 const editingChunk = placedChunks[editingChunkIndex];
                 bool shouldReturnToMap = false;
                 drawChunkEditorCanvas(
@@ -4154,6 +4206,26 @@ int main()
                     }
 
                     BeginScissorMode(cast(int)contentAreaRect.x, cast(int)contentAreaRect.y, cast(int)contentAreaRect.width, cast(int)contentAreaRect.height);
+
+                    if (chunkEditorTool == ChunkEditorTool.placePoint) {
+                        GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(0.0f), 82.0f, 24.0f), TextFormat("Snap: %d px", gridSnapSize));
+                        if (GuiButton(Rectangle(inspectorRect.x + 100.0f, iy(-2.0f), 24.0f, 24.0f), "<")) {
+                            if (gridSnapSize > 2) {
+                                gridSnapSize /= 2;
+                                PlaySound(clickSound);
+                            } else {
+                                PlaySound(touchSound);
+                            }
+                        }
+                        if (GuiButton(Rectangle(inspectorRect.x + 130.0f, iy(-2.0f), 24.0f, 24.0f), ">")) {
+                            if (gridSnapSize < 32) {
+                                gridSnapSize *= 2;
+                                PlaySound(clickSound);
+                            } else {
+                                PlaySound(touchSound);
+                            }
+                        }
+                    }
 
                     if (chunkEditorTool == ChunkEditorTool.placeEntity) {
                         GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(0.0f), 100.0f, 24.0f), "Entity Type:");
@@ -4460,6 +4532,36 @@ int main()
                             chunkEditorMessage = "Applied ceiling height to selected faces.";
                             PlaySound(clickSound);
                         }
+
+                        GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(380.0f), 56.0f, 24.0f), "Palette");
+                        GuiLabel(Rectangle(inspectorRect.x + 72.0f, iy(380.0f), 40.0f, 24.0f), TextFormat("%d", batchFacePaletteValue));
+                        if (GuiButton(Rectangle(inspectorRect.x + 114.0f, iy(378.0f), 24.0f, 24.0f), "-")) {
+                            if (batchFacePaletteValue > 0) {
+                                batchFacePaletteValue--;
+                                PlaySound(clickSound);
+                            } else {
+                                PlaySound(touchSound);
+                            }
+                        }
+                        if (GuiButton(Rectangle(inspectorRect.x + 144.0f, iy(378.0f), 24.0f, 24.0f), "+")) {
+                            if (batchFacePaletteValue < paletteCount - 1) {
+                                batchFacePaletteValue++;
+                                PlaySound(clickSound);
+                            } else {
+                                PlaySound(touchSound);
+                            }
+                        }
+                        if (GuiButton(Rectangle(inspectorRect.x + 176.0f, iy(378.0f), 68.0f, 24.0f), "Apply")) {
+                            pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
+                            foreach (selectedFaceIndex; selectedFaceIndices) {
+                                if (selectedFaceIndex >= 0 && selectedFaceIndex < cast(int)chunkGeometries[editingChunkIndex].faces.length) {
+                                    chunkGeometries[editingChunkIndex].faces[selectedFaceIndex].paletteIndex = batchFacePaletteValue;
+                                }
+                            }
+                            chunkEditorMessage = "Applied palette to selected faces.";
+                            PlaySound(applySound);
+                        }
+                        drawPaletteSwatch(ditherTexture, ditherImage, batchFacePaletteValue, Rectangle(inspectorRect.x + 16.0f, iy(408.0f), inspectorRect.width - 32.0f, 24.0f), contentAreaRect);
                     }
 
                     if (selectedFaceIndices.length == 1) {
@@ -4568,6 +4670,7 @@ int main()
                                     PlaySound(touchSound);
                                 }
                             }
+                            drawPaletteSwatch(ditherTexture, ditherImage, face.paletteIndex, Rectangle(inspectorRect.x + 16.0f, iy(408.0f), inspectorRect.width - 32.0f, 24.0f), contentAreaRect);
                         }
                     }
 
@@ -4611,6 +4714,7 @@ int main()
                                     PlaySound(touchSound);
                                 }
                             }
+                            drawPaletteSwatch(ditherTexture, ditherImage, wall.paletteIndex, Rectangle(inspectorRect.x + 16.0f, iy(378.0f), inspectorRect.width - 32.0f, 24.0f), contentAreaRect);
                         }
                     }
 
@@ -5019,6 +5123,7 @@ int main()
     UnloadSound(placeSound);
     UnloadSound(clickSound);
     UnloadRenderTexture(chunkPreviewTexture);
+    UnloadTexture(ditherTexture);
     UnloadImage(ditherImage);
     UnloadTexture(waterTexture);
     CloseAudioDevice();
