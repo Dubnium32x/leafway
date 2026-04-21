@@ -2,7 +2,7 @@
 	"authors": [
 		"DiSKOdev"
 	],
-	"copyright": "Copyright © 2026, DiSKOdev",
+	"copyright": "Copyright Â© 2026, DiSKOdev",
 	"dependencies": {
 		"raygui-d": "~>4.0.1",
 		"raylib-d": "~>5.5.3"
