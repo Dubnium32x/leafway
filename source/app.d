@@ -2757,8 +2757,12 @@ private string serializeChunkToLeaf(MapChunk chunk, ChunkGeometry geometry)
 
     auto buf = appender!string();
 
-    // i [MAX_POINTS]
-    buf ~= format("i %d\n", cast(int)geometry.points.length);
+    // i sectorCount wallCount objectCount entityCount
+    buf ~= format("i %d %d %d %d\n",
+        cast(int)geometry.faces.length,
+        cast(int)geometry.walls.length,
+        cast(int)geometry.objects.length,
+        cast(int)geometry.entities.length);
 
     // Faces: s x z ... p palette  f y0 y1  l layer
     foreach (face; geometry.faces) {
@@ -2878,7 +2882,7 @@ private bool parseLeafSection(string[] lines, ref int lineIdx, ref ChunkGeometry
 {
     geometry = ChunkGeometry.init;
 
-    // Skip 'i' (point count) header line
+    // Skip 'i' (sectorCount wallCount objectCount entityCount) header line
     if (lineIdx < lines.length && lines[lineIdx].strip().startsWith("i ")) lineIdx++;
 
     int[string] pointMap; // "x_z" -> index into geometry.points
