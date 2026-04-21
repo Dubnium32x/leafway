@@ -2773,14 +2773,13 @@ private string serializeChunkToLeaf(MapChunk chunk, ChunkGeometry geometry)
         buf ~= "\n";
     }
 
-    // Walls: w startX startZ  w endX endZ  p palette  f y0 y1  l layer
+    // Walls: w x0 z0 x1 z1  p palette  f y0 y1  l layer
     foreach (wall; geometry.walls) {
         if (wall.startPointIndex < 0 || wall.startPointIndex >= cast(int)geometry.points.length) continue;
         if (wall.endPointIndex   < 0 || wall.endPointIndex   >= cast(int)geometry.points.length) continue;
         const startPt = geometry.points[wall.startPointIndex];
         const endPt   = geometry.points[wall.endPointIndex];
-        buf ~= format("w %d %d\n", startPt.x, startPt.z);
-        buf ~= format("w %d %d\n", endPt.x,   endPt.z);
+        buf ~= format("w %d %d %d %d\n", startPt.x, startPt.z, endPt.x, endPt.z);
         buf ~= format("p %d\n", wall.paletteIndex);
         buf ~= format("f %d %d\n", wall.floorHeight, wall.ceilingHeight);
         buf ~= format("l %d\n", wall.layer);
@@ -2804,8 +2803,7 @@ private string serializeChunkToLeaf(MapChunk chunk, ChunkGeometry geometry)
 
             if (adjFaceIndex < 0) {
                 // Exterior edge - full wall
-                buf ~= format("w %d %d\n", ptA.x, ptA.z);
-                buf ~= format("w %d %d\n", ptB.x, ptB.z);
+                buf ~= format("w %d %d %d %d\n", ptA.x, ptA.z, ptB.x, ptB.z);
                 buf ~= format("p %d\n", face.paletteIndex);
                 buf ~= format("f %d %d\n", face.floorHeight, face.ceilingHeight);
                 buf ~= "\n";
@@ -2818,8 +2816,7 @@ private string serializeChunkToLeaf(MapChunk chunk, ChunkGeometry geometry)
                 const lowerFloor = face.floorHeight < adjFace.floorHeight ? face.floorHeight : adjFace.floorHeight;
                 const upperFloor = face.floorHeight > adjFace.floorHeight ? face.floorHeight : adjFace.floorHeight;
                 if (upperFloor > lowerFloor) {
-                    buf ~= format("w %d %d\n", ptA.x, ptA.z);
-                    buf ~= format("w %d %d\n", ptB.x, ptB.z);
+                    buf ~= format("w %d %d %d %d\n", ptA.x, ptA.z, ptB.x, ptB.z);
                     buf ~= format("p %d\n", face.paletteIndex);
                     buf ~= format("f %d %d\n", lowerFloor, upperFloor);
                     buf ~= "\n";
@@ -2829,8 +2826,7 @@ private string serializeChunkToLeaf(MapChunk chunk, ChunkGeometry geometry)
                 const lowerCeiling = face.ceilingHeight < adjFace.ceilingHeight ? face.ceilingHeight : adjFace.ceilingHeight;
                 const upperCeiling = face.ceilingHeight > adjFace.ceilingHeight ? face.ceilingHeight : adjFace.ceilingHeight;
                 if (upperCeiling > lowerCeiling) {
-                    buf ~= format("w %d %d\n", ptA.x, ptA.z);
-                    buf ~= format("w %d %d\n", ptB.x, ptB.z);
+                    buf ~= format("w %d %d %d %d\n", ptA.x, ptA.z, ptB.x, ptB.z);
                     buf ~= format("p %d\n", face.paletteIndex);
                     buf ~= format("f %d %d\n", lowerCeiling, upperCeiling);
                     buf ~= "\n";
@@ -2945,12 +2941,20 @@ private bool parseLeafSection(string[] lines, ref int lineIdx, ref ChunkGeometry
             continue;
         }
 
-        // Wall: 'w x z' start, 'w x z' end
+        // Wall: 'w x0 z0 x1 z1' (new) or 'w x z' start + 'w x z' end (legacy)
         if (line.length >= 2 && line[0] == 'w') {
             ChunkWall wall;
             {
                 const parts = line[2..$].split(' ');
-                if (parts.length >= 2) {
+                if (parts.length >= 4) {
+                    // New format: w x0 z0 x1 z1
+                    try {
+                        wall.startPointIndex = getOrAddPoint(parts[0].to!int, parts[1].to!int);
+                        wall.endPointIndex   = getOrAddPoint(parts[2].to!int, parts[3].to!int);
+                    }
+                    catch (Exception) {}
+                } else if (parts.length >= 2) {
+                    // Legacy format: first w line is start point
                     try { wall.startPointIndex = getOrAddPoint(parts[0].to!int, parts[1].to!int); }
                     catch (Exception) {}
                 }
@@ -2959,6 +2963,7 @@ private bool parseLeafSection(string[] lines, ref int lineIdx, ref ChunkGeometry
             if (lineIdx < lines.length) {
                 const fl = lines[lineIdx].strip();
                 if (fl.length >= 2 && fl[0] == 'w') {
+                    // Legacy format: second w line is end point
                     const parts = fl[2..$].split(' ');
                     if (parts.length >= 2) {
                         try { wall.endPointIndex = getOrAddPoint(parts[0].to!int, parts[1].to!int); }
