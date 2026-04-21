@@ -130,6 +130,7 @@ struct ChunkFace {
     int floorHeight;
     int ceilingHeight;
     int paletteIndex;
+    int normalDirection = 0; // -1: back face only, 0: both, 1: front face only
     bool autoWallFromHeightDifference;
     bool sameFloorAndCeiling;
     int layer = 0;
@@ -141,6 +142,7 @@ struct ChunkWall {
     int floorHeight;
     int ceilingHeight;
     int paletteIndex;
+    int normalDirection = 0; // -1: back face only, 0: both, 1: front face only
     int layer = 0;
 }
 
@@ -2772,6 +2774,7 @@ private string serializeChunkToLeaf(MapChunk chunk, ChunkGeometry geometry)
             buf ~= format("s %d %d\n", pt.x, pt.z);
         }
         buf ~= format("p %d\n", face.paletteIndex);
+        buf ~= format("n %d\n", face.normalDirection);
         buf ~= format("f %d %d\n", face.floorHeight, face.ceilingHeight);
         buf ~= format("l %d\n", face.layer);
         buf ~= "\n";
@@ -2785,6 +2788,7 @@ private string serializeChunkToLeaf(MapChunk chunk, ChunkGeometry geometry)
         const endPt   = geometry.points[wall.endPointIndex];
         buf ~= format("w %d %d %d %d\n", startPt.x, startPt.z, endPt.x, endPt.z);
         buf ~= format("p %d\n", wall.paletteIndex);
+        buf ~= format("n %d\n", wall.normalDirection);
         buf ~= format("f %d %d\n", wall.floorHeight, wall.ceilingHeight);
         buf ~= format("l %d\n", wall.layer);
         buf ~= "\n";
@@ -2924,6 +2928,13 @@ private bool parseLeafSection(string[] lines, ref int lineIdx, ref ChunkGeometry
             }
             if (lineIdx < lines.length) {
                 const fl = lines[lineIdx].strip();
+                if (fl.length >= 2 && fl[0] == 'n') {
+                    try { face.normalDirection = fl[2..$].to!int; } catch (Exception) {}
+                    lineIdx++;
+                }
+            }
+            if (lineIdx < lines.length) {
+                const fl = lines[lineIdx].strip();
                 if (fl.length >= 2 && fl[0] == 'f') {
                     const parts = fl[2..$].split(' ');
                     if (parts.length >= 2) {
@@ -2980,6 +2991,13 @@ private bool parseLeafSection(string[] lines, ref int lineIdx, ref ChunkGeometry
                 const fl = lines[lineIdx].strip();
                 if (fl.length >= 2 && fl[0] == 'p') {
                     try { wall.paletteIndex = fl[2..$].to!int; } catch (Exception) {}
+                    lineIdx++;
+                }
+            }
+            if (lineIdx < lines.length) {
+                const fl = lines[lineIdx].strip();
+                if (fl.length >= 2 && fl[0] == 'n') {
+                    try { wall.normalDirection = fl[2..$].to!int; } catch (Exception) {}
                     lineIdx++;
                 }
             }
@@ -3201,7 +3219,7 @@ private ChunkGeometry dupGeometry(const ChunkGeometry g)
     result.objects = g.objects.dup;
     result.faces.reserve(g.faces.length);
     foreach (f; g.faces) {
-        auto face = ChunkFace(f.pointIndices.dup, f.floorHeight, f.ceilingHeight, f.paletteIndex, f.autoWallFromHeightDifference, f.sameFloorAndCeiling);
+        auto face = ChunkFace(f.pointIndices.dup, f.floorHeight, f.ceilingHeight, f.paletteIndex, f.normalDirection, f.autoWallFromHeightDifference, f.sameFloorAndCeiling);
         face.layer = f.layer;
         result.faces ~= face;
     }
@@ -3366,11 +3384,13 @@ int main()
     int batchFaceFloorValue = 0;
     int batchFaceCeilingValue = 16;
     int batchFacePaletteValue = 0;
+    int batchFaceNormalValue = 0;
     int batchWallFloorValue = 0;
     int batchWallCeilingValue = 16;
     bool batchWallFloorEditMode = false;
     bool batchWallCeilingEditMode = false;
     int batchWallPaletteValue = 0;
+    int batchWallNormalValue = 0;
     string chunkEditorMessage = "Point mode: click to place snapped points inside the chunk bounds.";
     bool shouldExit = false;
     bool showAboutDialog = false;
@@ -4671,6 +4691,26 @@ int main()
                             PlaySound(applySound);
                         }
                         drawPaletteSwatch(ditherTexture, ditherImage, batchFacePaletteValue, Rectangle(inspectorRect.x + 16.0f, iy(408.0f), inspectorRect.width - 32.0f, 24.0f), contentAreaRect);
+
+                        const batchFaceNormStr = batchFaceNormalValue < 0 ? "Back Only" : (batchFaceNormalValue > 0 ? "Front Only" : "Both");
+                        GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(440.0f), 60.0f, 24.0f), "Normal:");
+                        GuiLabel(Rectangle(inspectorRect.x + 76.0f, iy(440.0f), 76.0f, 24.0f), batchFaceNormStr.ptr);
+                        if (GuiButton(Rectangle(inspectorRect.x + 156.0f, iy(438.0f), 24.0f, 24.0f), "<")) {
+                            if (batchFaceNormalValue > -1) { batchFaceNormalValue--; PlaySound(clickSound); } else PlaySound(touchSound);
+                        }
+                        if (GuiButton(Rectangle(inspectorRect.x + 184.0f, iy(438.0f), 24.0f, 24.0f), ">")) {
+                            if (batchFaceNormalValue < 1) { batchFaceNormalValue++; PlaySound(clickSound); } else PlaySound(touchSound);
+                        }
+                        if (GuiButton(Rectangle(inspectorRect.x + 212.0f, iy(438.0f), 44.0f, 24.0f), "Apply")) {
+                            pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
+                            foreach (selectedFaceIndex; selectedFaceIndices) {
+                                if (selectedFaceIndex >= 0 && selectedFaceIndex < cast(int)chunkGeometries[editingChunkIndex].faces.length) {
+                                    chunkGeometries[editingChunkIndex].faces[selectedFaceIndex].normalDirection = batchFaceNormalValue;
+                                }
+                            }
+                            chunkEditorMessage = "Applied normal direction to selected faces.";
+                            PlaySound(applySound);
+                        }
                     }
 
                     if (selectedFaceIndices.length == 1) {
@@ -4780,6 +4820,24 @@ int main()
                                 }
                             }
                             drawPaletteSwatch(ditherTexture, ditherImage, face.paletteIndex, Rectangle(inspectorRect.x + 16.0f, iy(408.0f), inspectorRect.width - 32.0f, 24.0f), contentAreaRect);
+
+                            const faceNormStr = face.normalDirection < 0 ? "Back Only" : (face.normalDirection > 0 ? "Front Only" : "Both");
+                            GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(440.0f), 60.0f, 24.0f), "Normal:");
+                            GuiLabel(Rectangle(inspectorRect.x + 76.0f, iy(440.0f), 76.0f, 24.0f), faceNormStr.ptr);
+                            if (GuiButton(Rectangle(inspectorRect.x + 156.0f, iy(438.0f), 24.0f, 24.0f), "<")) {
+                                if (face.normalDirection > -1) {
+                                    pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
+                                    face.normalDirection--;
+                                    PlaySound(clickSound);
+                                } else PlaySound(touchSound);
+                            }
+                            if (GuiButton(Rectangle(inspectorRect.x + 184.0f, iy(438.0f), 24.0f, 24.0f), ">")) {
+                                if (face.normalDirection < 1) {
+                                    pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
+                                    face.normalDirection++;
+                                    PlaySound(clickSound);
+                                } else PlaySound(touchSound);
+                            }
                         }
                     }
 
@@ -4865,6 +4923,26 @@ int main()
                             PlaySound(applySound);
                         }
                         drawPaletteSwatch(ditherTexture, ditherImage, batchWallPaletteValue, Rectangle(inspectorRect.x + 16.0f, iy(408.0f), inspectorRect.width - 32.0f, 24.0f), contentAreaRect);
+
+                        const batchWallNormStr = batchWallNormalValue < 0 ? "Back Only" : (batchWallNormalValue > 0 ? "Front Only" : "Both");
+                        GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(440.0f), 60.0f, 24.0f), "Normal:");
+                        GuiLabel(Rectangle(inspectorRect.x + 76.0f, iy(440.0f), 76.0f, 24.0f), batchWallNormStr.ptr);
+                        if (GuiButton(Rectangle(inspectorRect.x + 156.0f, iy(438.0f), 24.0f, 24.0f), "<")) {
+                            if (batchWallNormalValue > -1) { batchWallNormalValue--; PlaySound(clickSound); } else PlaySound(touchSound);
+                        }
+                        if (GuiButton(Rectangle(inspectorRect.x + 184.0f, iy(438.0f), 24.0f, 24.0f), ">")) {
+                            if (batchWallNormalValue < 1) { batchWallNormalValue++; PlaySound(clickSound); } else PlaySound(touchSound);
+                        }
+                        if (GuiButton(Rectangle(inspectorRect.x + 212.0f, iy(438.0f), 44.0f, 24.0f), "Apply")) {
+                            pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
+                            foreach (wi; selectedWallIndices) {
+                                if (wi >= 0 && wi < cast(int)chunkGeometries[editingChunkIndex].walls.length) {
+                                    chunkGeometries[editingChunkIndex].walls[wi].normalDirection = batchWallNormalValue;
+                                }
+                            }
+                            chunkEditorMessage = "Applied normal direction to selected walls.";
+                            PlaySound(applySound);
+                        }
                     }
 
                     if (selectedWallIndices.length == 1) {
@@ -4918,6 +4996,24 @@ int main()
                                 }
                             }
                             drawPaletteSwatch(ditherTexture, ditherImage, wall.paletteIndex, Rectangle(inspectorRect.x + 16.0f, iy(378.0f), inspectorRect.width - 32.0f, 24.0f), contentAreaRect);
+
+                            const wallNormStr = wall.normalDirection < 0 ? "Back Only" : (wall.normalDirection > 0 ? "Front Only" : "Both");
+                            GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(410.0f), 60.0f, 24.0f), "Normal:");
+                            GuiLabel(Rectangle(inspectorRect.x + 76.0f, iy(410.0f), 76.0f, 24.0f), wallNormStr.ptr);
+                            if (GuiButton(Rectangle(inspectorRect.x + 156.0f, iy(408.0f), 24.0f, 24.0f), "<")) {
+                                if (wall.normalDirection > -1) {
+                                    pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
+                                    wall.normalDirection--;
+                                    PlaySound(clickSound);
+                                } else PlaySound(touchSound);
+                            }
+                            if (GuiButton(Rectangle(inspectorRect.x + 184.0f, iy(408.0f), 24.0f, 24.0f), ">")) {
+                                if (wall.normalDirection < 1) {
+                                    pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
+                                    wall.normalDirection++;
+                                    PlaySound(clickSound);
+                                } else PlaySound(touchSound);
+                            }
                         }
                     }
 
