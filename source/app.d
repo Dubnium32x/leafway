@@ -3331,6 +3331,8 @@ int main()
     float chunkPreviewYaw = 0.75f;
     float chunkPreviewPitch = 0.55f;
     float chunkPreviewDistance = 220.0f;
+    float chunkPreviewPanX = 0.0f;
+    float chunkPreviewPanZ = 0.0f;
     ChunkTool activeChunkTool = ChunkTool.draw;
     int selectedChunkIndex = -1;
     int editingChunkIndex = -1;
@@ -3399,6 +3401,9 @@ int main()
                 [placedChunks[editingChunkIndex]],
                 editingChunkIndex < cast(int)chunkGeometries.length ? [chunkGeometries[editingChunkIndex]] : cast(ChunkGeometry[])[])
             : getChunkPreviewBounds(placedChunks, chunkGeometries);
+        // Apply persistent WASD pan offset to camera target
+        chunkPreviewBounds.horizontal.x += chunkPreviewPanX;
+        chunkPreviewBounds.horizontal.y += chunkPreviewPanZ;
         const chunkPreviewMaxDistance = getChunkPreviewMaxDistance(chunkPreviewBounds);
         const wantsWindowClose = WindowShouldClose();
         if (wantsWindowClose && !IsKeyPressed(KeyboardKey.KEY_ESCAPE)) {
@@ -3579,6 +3584,8 @@ int main()
                         chunkPreviewYaw = 0.75f;
                         chunkPreviewPitch = 0.55f;
                         chunkPreviewDistance = getChunkPreviewDefaultDistance(chunkPreviewBounds);
+                        chunkPreviewPanX = 0.0f;
+                        chunkPreviewPanZ = 0.0f;
                         chunkUndoStack.length = 0;
                         currentChunkLayer = 0;
                         PlaySound(connectSound);
@@ -3671,32 +3678,20 @@ int main()
                 // WASD camera movement in 3D view (works anywhere in chunk editor)
                 const moveSpeed = 8.0f;
                 if (IsKeyDown(KeyboardKey.KEY_W)) {
-                    // Move camera target forward
-                    const moveX = cast(float)(cos(chunkPreviewYaw)) * moveSpeed;
-                    const moveZ = cast(float)(sin(chunkPreviewYaw)) * moveSpeed;
-                    chunkPreviewBounds.horizontal.x += moveX;
-                    chunkPreviewBounds.horizontal.y += moveZ;
+                    chunkPreviewPanX += cast(float)(cos(chunkPreviewYaw)) * moveSpeed;
+                    chunkPreviewPanZ += cast(float)(sin(chunkPreviewYaw)) * moveSpeed;
                 }
                 if (IsKeyDown(KeyboardKey.KEY_S)) {
-                    // Move camera target backward
-                    const moveX = cast(float)(cos(chunkPreviewYaw)) * moveSpeed;
-                    const moveZ = cast(float)(sin(chunkPreviewYaw)) * moveSpeed;
-                    chunkPreviewBounds.horizontal.x -= moveX;
-                    chunkPreviewBounds.horizontal.y -= moveZ;
+                    chunkPreviewPanX -= cast(float)(cos(chunkPreviewYaw)) * moveSpeed;
+                    chunkPreviewPanZ -= cast(float)(sin(chunkPreviewYaw)) * moveSpeed;
                 }
                 if (IsKeyDown(KeyboardKey.KEY_A)) {
-                    // Move camera target left
-                    const moveX = cast(float)(cos(chunkPreviewYaw + 1.5708f)) * moveSpeed;
-                    const moveZ = cast(float)(sin(chunkPreviewYaw + 1.5708f)) * moveSpeed;
-                    chunkPreviewBounds.horizontal.x += moveX;
-                    chunkPreviewBounds.horizontal.y += moveZ;
+                    chunkPreviewPanX += cast(float)(cos(chunkPreviewYaw + 1.5708f)) * moveSpeed;
+                    chunkPreviewPanZ += cast(float)(sin(chunkPreviewYaw + 1.5708f)) * moveSpeed;
                 }
                 if (IsKeyDown(KeyboardKey.KEY_D)) {
-                    // Move camera target right
-                    const moveX = cast(float)(cos(chunkPreviewYaw - 1.5708f)) * moveSpeed;
-                    const moveZ = cast(float)(sin(chunkPreviewYaw - 1.5708f)) * moveSpeed;
-                    chunkPreviewBounds.horizontal.x += moveX;
-                    chunkPreviewBounds.horizontal.y += moveZ;
+                    chunkPreviewPanX += cast(float)(cos(chunkPreviewYaw - 1.5708f)) * moveSpeed;
+                    chunkPreviewPanZ += cast(float)(sin(chunkPreviewYaw - 1.5708f)) * moveSpeed;
                 }
 
                 // T key: Toggle top-down view
@@ -3705,6 +3700,8 @@ int main()
                         // Currently near top-down, reset to default angle
                         chunkPreviewPitch = 0.55f;
                         chunkPreviewYaw = 0.75f;
+                        chunkPreviewPanX = 0.0f;
+                        chunkPreviewPanZ = 0.0f;
                         chunkEditorMessage = "3D view reset to default angle.";
                     } else {
                         // Switch to top-down view
