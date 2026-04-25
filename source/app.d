@@ -970,38 +970,14 @@ private void drawPaletteFace(ChunkGeometry geometry, ChunkFace face, Image dithe
 
 private Color getPalettePreviewColor(Image ditherImage, int paletteIndex)
 {
-    static Color[] cachedColors;
-    static int cachedWidth = -1;
-    static int cachedHeight = -1;
-
-    const paletteCount = getPaletteCount(ditherImage);
-    if (paletteCount <= 0) {
-        return Colors.LIGHTGRAY;
-    }
-
-    if (cachedWidth != ditherImage.width || cachedHeight != ditherImage.height || cachedColors.length != paletteCount) {
-        cachedWidth = ditherImage.width;
-        cachedHeight = ditherImage.height;
-        cachedColors.length = paletteCount;
-
-        const tileSize = getPaletteTileSize(ditherImage);
-        for (int palette = 0; palette < paletteCount; palette++) {
-            const tileOrigin = getPaletteTileOrigin(ditherImage, palette);
-            int brightnessSum = 0;
-            for (int y = 0; y < tileSize; y++) {
-                for (int x = 0; x < tileSize; x++) {
-                    const pixel = GetImageColor(ditherImage, cast(int)tileOrigin.x + x, cast(int)tileOrigin.y + y);
-                    brightnessSum += pixel.r;
-                }
-            }
-
-            const averageBrightness = cast(ubyte)(brightnessSum / (tileSize * tileSize));
-            cachedColors[palette] = Color(averageBrightness, averageBrightness, averageBrightness, 255);
-        }
-    }
-
-    const safePaletteIndex = positiveModulo(paletteIndex, paletteCount);
-    return cachedColors[safePaletteIndex];
+    // MAX_PALETTE is 31
+    enum MAX_PALETTE = 31;
+    
+    // Compute color based on alpha channel: 0 = Black, 255 = White
+    const safePaletteIndex = paletteIndex < 0 ? 0 : (paletteIndex > MAX_PALETTE ? MAX_PALETTE : paletteIndex);
+    const ubyte colorValue = cast(ubyte)((safePaletteIndex * 255) / MAX_PALETTE);
+    
+    return Color(colorValue, colorValue, colorValue, 255);
 }
 
 private void drawPaletteSwatch(Texture2D ditherTexture, Image ditherImage, int paletteIndex, Rectangle destRect, Rectangle outerScissorRect)
@@ -1075,6 +1051,23 @@ private void drawDoubleSidedTriangle3D(Vector3 a, Vector3 b, Vector3 c, Color co
     DrawTriangle3D(c, b, a, color);
 }
 
+// Draw triangle with normal direction support
+// normalDirection: -1 = back only, 0 = both, 1 = front only
+private void drawDirectedTriangle3D(Vector3 a, Vector3 b, Vector3 c, Color color, int normalDirection)
+{
+    if (normalDirection == 0) {
+        // Both sides
+        DrawTriangle3D(a, b, c, color);
+        DrawTriangle3D(c, b, a, color);
+    } else if (normalDirection > 0) {
+        // Front only
+        DrawTriangle3D(a, b, c, color);
+    } else {
+        // Back only
+        DrawTriangle3D(c, b, a, color);
+    }
+}
+
 private void drawChunkFacePreview3D(ChunkGeometry geometry, ChunkFace face, Image ditherImage, Vector2 offset = Vector2.zero)
 {
     auto polygonPoints = getFacePolygonPoints(geometry, face, offset);
@@ -1100,17 +1093,19 @@ private void drawChunkFacePreview3D(ChunkGeometry geometry, ChunkFace face, Imag
     for (int index = 0; index < cast(int)polygonPoints.length; index++) {
         const pointA = polygonPoints[index];
         const pointB = polygonPoints[(index + 1) % cast(int)polygonPoints.length];
-        drawDoubleSidedTriangle3D(
+        drawDirectedTriangle3D(
             floorCentroid,
             Vector3(pointB.x, face.floorHeight, pointB.y),
             Vector3(pointA.x, face.floorHeight, pointA.y),
-            floorColor
+            floorColor,
+            face.normalDirection
         );
-        drawDoubleSidedTriangle3D(
+        drawDirectedTriangle3D(
             ceilingCentroid,
             Vector3(pointA.x, face.ceilingHeight, pointA.y),
             Vector3(pointB.x, face.ceilingHeight, pointB.y),
-            ceilingColor
+            ceilingColor,
+            face.normalDirection
         );
     }
 
@@ -1127,8 +1122,37 @@ private void drawChunkWallPreview3D(ChunkGeometry geometry, ChunkWall wall, Imag
     if (wall.startPointIndex < 0 || wall.startPointIndex >= cast(int)geometry.points.length) return;
     if (wall.endPointIndex < 0 || wall.endPointIndex >= cast(int)geometry.points.length) return;
 
-    const startPoint = getChunkPointPosition(geometry.points[wall.startPointIndex]);
-    const endPoint = getChunkPointPosition(geometry.points[wall.endPointIndex]);
+    auto startPoint = getChunkPointPosition(geometry.points[wall.startPointIndex]);
+    auto endPoint = getChunkPointPosition(geometry.points[wall.endPointIndex]);
+    
+    // Apply wall winding to ensure consistent orientation
+    float x0 = startPoint.x;
+    float z0 = startPoint.y;
+    float x1 = endPoint.x;
+    float z1 = endPoint.y;
+    
+    if (x0 > x1) {
+        const tmpX = x0;
+        const tmpZ = z0;
+        x0 = x1;
+        z0 = z1;
+        x1 = tmpX;
+        z1 = tmpZ;
+    }
+    
+    if (z0 > z1) {
+        const tmpX = x0;
+        const tmpZ = z0;
+        x0 = x1;
+        z0 = z1;
+        x1 = tmpX;
+        z1 = tmpZ;
+    }
+    
+    // Update points with winded values
+    startPoint = Vector2(x0, z0);
+    endPoint = Vector2(x1, z1);
+    
     const color = getPalettePreviewColor(ditherImage, wall.paletteIndex);
 
     const lowerA = Vector3(offset.x + startPoint.x, wall.floorHeight, offset.y + startPoint.y);
@@ -1136,8 +1160,8 @@ private void drawChunkWallPreview3D(ChunkGeometry geometry, ChunkWall wall, Imag
     const lowerB = Vector3(offset.x + endPoint.x, wall.floorHeight, offset.y + endPoint.y);
     const upperB = Vector3(offset.x + endPoint.x, wall.ceilingHeight, offset.y + endPoint.y);
 
-    drawDoubleSidedTriangle3D(lowerA, lowerB, upperA, color);
-    drawDoubleSidedTriangle3D(upperA, lowerB, upperB, color);
+    drawDirectedTriangle3D(lowerA, lowerB, upperA, color, wall.normalDirection);
+    drawDirectedTriangle3D(upperA, lowerB, upperB, color, wall.normalDirection);
     DrawLine3D(lowerA, lowerB, Colors.MAROON);
     DrawLine3D(upperA, upperB, Colors.MAROON);
     DrawLine3D(lowerA, upperA, Colors.MAROON);
@@ -3789,12 +3813,44 @@ int main()
                     if (chunkPreviewDistance > chunkPreviewMaxDistance) chunkPreviewDistance = chunkPreviewMaxDistance;
                 }
 
+                // WASD camera movement in 3D view
+                const moveSpeed = 8.0f;
+                if (IsKeyDown(KeyboardKey.KEY_W)) {
+                    // Move camera target forward
+                    const moveX = cast(float)(cos(chunkPreviewYaw)) * moveSpeed;
+                    const moveZ = cast(float)(sin(chunkPreviewYaw)) * moveSpeed;
+                    chunkPreviewBounds.horizontal.x += moveX;
+                    chunkPreviewBounds.horizontal.y += moveZ;
+                }
+                if (IsKeyDown(KeyboardKey.KEY_S)) {
+                    // Move camera target backward
+                    const moveX = cast(float)(cos(chunkPreviewYaw)) * moveSpeed;
+                    const moveZ = cast(float)(sin(chunkPreviewYaw)) * moveSpeed;
+                    chunkPreviewBounds.horizontal.x -= moveX;
+                    chunkPreviewBounds.horizontal.y -= moveZ;
+                }
+                if (IsKeyDown(KeyboardKey.KEY_A)) {
+                    // Move camera target left
+                    const moveX = cast(float)(cos(chunkPreviewYaw + 1.5708f)) * moveSpeed;
+                    const moveZ = cast(float)(sin(chunkPreviewYaw + 1.5708f)) * moveSpeed;
+                    chunkPreviewBounds.horizontal.x += moveX;
+                    chunkPreviewBounds.horizontal.y += moveZ;
+                }
+                if (IsKeyDown(KeyboardKey.KEY_D)) {
+                    // Move camera target right
+                    const moveX = cast(float)(cos(chunkPreviewYaw - 1.5708f)) * moveSpeed;
+                    const moveZ = cast(float)(sin(chunkPreviewYaw - 1.5708f)) * moveSpeed;
+                    chunkPreviewBounds.horizontal.x += moveX;
+                    chunkPreviewBounds.horizontal.y += moveZ;
+                }
+
                 if (IsMouseButtonDown(MOUSE_RIGHT_BUTTON)) {
                     const mouseDelta = GetMouseDelta();
                     chunkPreviewYaw -= mouseDelta.x * 0.01f;
                     chunkPreviewPitch -= mouseDelta.y * 0.01f;
-                    if (chunkPreviewPitch < 0.20f) chunkPreviewPitch = 0.20f;
-                    if (chunkPreviewPitch > 1.35f) chunkPreviewPitch = 1.35f;
+                    // Allow rotation under the map: -90 to +90 degrees (in radians: -1.5708 to 1.5708)
+                    if (chunkPreviewPitch < -1.5708f) chunkPreviewPitch = -1.5708f;
+                    if (chunkPreviewPitch > 1.5708f) chunkPreviewPitch = 1.5708f;
                 }
 
                 if (IsMouseButtonPressed(MouseButton.MOUSE_BUTTON_LEFT)) {
@@ -4540,8 +4596,6 @@ int main()
                     }
 
                     if (selectedFaceIndices.length > 0) {
-                        bool allAutoWallsEnabled = true;
-                        bool anyAutoWallsEnabled = false;
                         bool allSameYEnabled = true;
                         bool anySameYEnabled = false;
 
@@ -4551,31 +4605,33 @@ int main()
                             }
 
                             const face = chunkGeometries[editingChunkIndex].faces[selectedFaceIndex];
-                            if (face.autoWallFromHeightDifference) anyAutoWallsEnabled = true;
-                            else allAutoWallsEnabled = false;
-
                             if (face.sameFloorAndCeiling) anySameYEnabled = true;
                             else allSameYEnabled = false;
                         }
 
-                        const autoWallsLabel = allAutoWallsEnabled
-                            ? "Auto Walls: On"
-                            : (anyAutoWallsEnabled ? "Auto Walls: Mixed" : "Auto Walls: Off");
                         const sameYLabel = allSameYEnabled
                             ? "Same Y: On"
                             : (anySameYEnabled ? "Same Y: Mixed" : "Same Y: Off");
 
-                        if (GuiButton(Rectangle(inspectorRect.x + 16.0f, iy(264.0f), 116.0f, 28.0f), autoWallsLabel.ptr)) {
+                        // Create Walls button - creates walls across all points of selected faces
+                        if (GuiButton(Rectangle(inspectorRect.x + 16.0f, iy(264.0f), 116.0f, 28.0f), "Create Walls")) {
                             pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
-                            const nextAutoWallsState = !allAutoWallsEnabled;
+                            int wallsCreated = 0;
                             foreach (selectedFaceIndex; selectedFaceIndices) {
                                 if (selectedFaceIndex >= 0 && selectedFaceIndex < cast(int)chunkGeometries[editingChunkIndex].faces.length) {
-                                    chunkGeometries[editingChunkIndex].faces[selectedFaceIndex].autoWallFromHeightDifference = nextAutoWallsState;
+                                    auto face = &chunkGeometries[editingChunkIndex].faces[selectedFaceIndex];
+                                    // Create walls for each edge of the face
+                                    for (int i = 0; i < cast(int)face.pointIndices.length; i++) {
+                                        const pointAIndex = face.pointIndices[i];
+                                        const pointBIndex = face.pointIndices[(i + 1) % cast(int)face.pointIndices.length];
+                                        // Create a wall between these two points
+                                        auto newWall = ChunkWall(pointAIndex, pointBIndex, face.floorHeight, face.ceilingHeight, face.paletteIndex);
+                                        chunkGeometries[editingChunkIndex].walls ~= newWall;
+                                        wallsCreated++;
+                                    }
                                 }
                             }
-                            chunkEditorMessage = nextAutoWallsState
-                                ? "Selected sectors now auto-generate walls from height differences."
-                                : "Selected sectors no longer auto-generate height-difference walls.";
+                            chunkEditorMessage = to!string(TextFormat("Created %d walls from selected faces.", wallsCreated));
                             PlaySound(applySound);
                         }
 
