@@ -1442,7 +1442,7 @@ private void renderChunkPreview3D(
         if (index < chunkGeometries.length) {
             foreach (faceIndex, face; chunkGeometries[index].faces) {
                 drawChunkFacePreview3D(chunkGeometries[index], face, ditherImage, chunkOffset);
-                drawChunkAutoWallsPreview3D(chunkGeometries[index], cast(int)faceIndex, ditherImage, chunkOffset);
+                // Auto-walls removed - use Create Walls button instead
             }
 
             foreach (wall; chunkGeometries[index].walls) {
@@ -2810,7 +2810,21 @@ private string serializeChunkToLeaf(MapChunk chunk, ChunkGeometry geometry)
         if (wall.endPointIndex   < 0 || wall.endPointIndex   >= cast(int)geometry.points.length) continue;
         const startPt = geometry.points[wall.startPointIndex];
         const endPt   = geometry.points[wall.endPointIndex];
-        buf ~= format("w %d %d %d %d\n", startPt.x, startPt.z, endPt.x, endPt.z);
+
+        // Apply wall winding: sort by x then z so orientation is always consistent
+        int x0 = startPt.x, z0 = startPt.z, x1 = endPt.x, z1 = endPt.z;
+        if (x0 > x1) {
+            int tmpX = x0; int tmpZ = z0;
+            x0 = x1; z0 = z1;
+            x1 = tmpX; z1 = tmpZ;
+        }
+        if (z0 > z1) {
+            int tmpX = x0; int tmpZ = z0;
+            x0 = x1; z0 = z1;
+            x1 = tmpX; z1 = tmpZ;
+        }
+
+        buf ~= format("w %d %d %d %d\n", x0, z0, x1, z1);
         buf ~= format("p %d\n", wall.paletteIndex);
         buf ~= format("n %d\n", wall.normalDirection);
         buf ~= format("f %d %d\n", wall.floorHeight, wall.ceilingHeight);
@@ -2818,54 +2832,8 @@ private string serializeChunkToLeaf(MapChunk chunk, ChunkGeometry geometry)
         buf ~= "\n";
     }
 
-    // Auto-walls: computed from faces with autoWallFromHeightDifference
-    for (int faceIndex = 0; faceIndex < cast(int)geometry.faces.length; faceIndex++) {
-        const face = geometry.faces[faceIndex];
-        if (!face.autoWallFromHeightDifference || face.pointIndices.length < 2) continue;
-
-        for (int ei = 0; ei < cast(int)face.pointIndices.length; ei++) {
-            const pointAIndex = face.pointIndices[ei];
-            const pointBIndex = face.pointIndices[(ei + 1) % cast(int)face.pointIndices.length];
-            if (pointAIndex < 0 || pointAIndex >= cast(int)geometry.points.length) continue;
-            if (pointBIndex < 0 || pointBIndex >= cast(int)geometry.points.length) continue;
-            const ptA = geometry.points[pointAIndex];
-            const ptB = geometry.points[pointBIndex];
-
-            const adjFaceIndex = findAdjacentFaceForEdge(geometry, faceIndex, pointAIndex, pointBIndex);
-
-            if (adjFaceIndex < 0) {
-                // Exterior edge - full wall
-                buf ~= format("w %d %d %d %d\n", ptA.x, ptA.z, ptB.x, ptB.z);
-                buf ~= format("p %d\n", face.paletteIndex);
-                buf ~= format("f %d %d\n", face.floorHeight, face.ceilingHeight);
-                buf ~= "\n";
-            } else {
-                const adjFace = geometry.faces[adjFaceIndex];
-                // Dedup: only emit once per shared edge
-                if (adjFace.autoWallFromHeightDifference && adjFaceIndex < faceIndex) continue;
-
-                // Floor step wall
-                const lowerFloor = face.floorHeight < adjFace.floorHeight ? face.floorHeight : adjFace.floorHeight;
-                const upperFloor = face.floorHeight > adjFace.floorHeight ? face.floorHeight : adjFace.floorHeight;
-                if (upperFloor > lowerFloor) {
-                    buf ~= format("w %d %d %d %d\n", ptA.x, ptA.z, ptB.x, ptB.z);
-                    buf ~= format("p %d\n", face.paletteIndex);
-                    buf ~= format("f %d %d\n", lowerFloor, upperFloor);
-                    buf ~= "\n";
-                }
-
-                // Ceiling step wall
-                const lowerCeiling = face.ceilingHeight < adjFace.ceilingHeight ? face.ceilingHeight : adjFace.ceilingHeight;
-                const upperCeiling = face.ceilingHeight > adjFace.ceilingHeight ? face.ceilingHeight : adjFace.ceilingHeight;
-                if (upperCeiling > lowerCeiling) {
-                    buf ~= format("w %d %d %d %d\n", ptA.x, ptA.z, ptB.x, ptB.z);
-                    buf ~= format("p %d\n", face.paletteIndex);
-                    buf ~= format("f %d %d\n", lowerCeiling, upperCeiling);
-                    buf ~= "\n";
-                }
-            }
-        }
-    }
+    // Auto-walls removed - walls are now created explicitly with Create Walls button
+    // (Legacy auto-wall code removed to avoid duplicate walls in export)
 
     // Objects: o x y z rx ry rz sx sy sz type layer
     foreach (obj; geometry.objects) {
@@ -3700,6 +3668,52 @@ int main()
             const keyboardShortcutsEnabled = !faceFloorEditMode && !faceCeilingEditMode && !batchFaceFloorEditMode && !batchFaceCeilingEditMode;
 
             if (keyboardShortcutsEnabled) {
+                // WASD camera movement in 3D view (works anywhere in chunk editor)
+                const moveSpeed = 8.0f;
+                if (IsKeyDown(KeyboardKey.KEY_W)) {
+                    // Move camera target forward
+                    const moveX = cast(float)(cos(chunkPreviewYaw)) * moveSpeed;
+                    const moveZ = cast(float)(sin(chunkPreviewYaw)) * moveSpeed;
+                    chunkPreviewBounds.horizontal.x += moveX;
+                    chunkPreviewBounds.horizontal.y += moveZ;
+                }
+                if (IsKeyDown(KeyboardKey.KEY_S)) {
+                    // Move camera target backward
+                    const moveX = cast(float)(cos(chunkPreviewYaw)) * moveSpeed;
+                    const moveZ = cast(float)(sin(chunkPreviewYaw)) * moveSpeed;
+                    chunkPreviewBounds.horizontal.x -= moveX;
+                    chunkPreviewBounds.horizontal.y -= moveZ;
+                }
+                if (IsKeyDown(KeyboardKey.KEY_A)) {
+                    // Move camera target left
+                    const moveX = cast(float)(cos(chunkPreviewYaw + 1.5708f)) * moveSpeed;
+                    const moveZ = cast(float)(sin(chunkPreviewYaw + 1.5708f)) * moveSpeed;
+                    chunkPreviewBounds.horizontal.x += moveX;
+                    chunkPreviewBounds.horizontal.y += moveZ;
+                }
+                if (IsKeyDown(KeyboardKey.KEY_D)) {
+                    // Move camera target right
+                    const moveX = cast(float)(cos(chunkPreviewYaw - 1.5708f)) * moveSpeed;
+                    const moveZ = cast(float)(sin(chunkPreviewYaw - 1.5708f)) * moveSpeed;
+                    chunkPreviewBounds.horizontal.x += moveX;
+                    chunkPreviewBounds.horizontal.y += moveZ;
+                }
+
+                // T key: Toggle top-down view
+                if (IsKeyPressed(KeyboardKey.KEY_T)) {
+                    if (chunkPreviewPitch > 1.4f) {
+                        // Currently near top-down, reset to default angle
+                        chunkPreviewPitch = 0.55f;
+                        chunkPreviewYaw = 0.75f;
+                        chunkEditorMessage = "3D view reset to default angle.";
+                    } else {
+                        // Switch to top-down view
+                        chunkPreviewPitch = 1.5708f;  // 90 degrees (straight down)
+                        chunkEditorMessage = "3D view: Top-down mode.";
+                    }
+                    PlaySound(clickSound);
+                }
+
                 if (controlDown && IsKeyPressed(KeyboardKey.KEY_Z) && chunkUndoStack.length > 0) {
                     chunkGeometries[editingChunkIndex] = dupGeometry(chunkUndoStack[$ - 1]);
                     chunkUndoStack = chunkUndoStack[0 .. $ - 1];
@@ -3813,37 +3827,7 @@ int main()
                     if (chunkPreviewDistance > chunkPreviewMaxDistance) chunkPreviewDistance = chunkPreviewMaxDistance;
                 }
 
-                // WASD camera movement in 3D view
-                const moveSpeed = 8.0f;
-                if (IsKeyDown(KeyboardKey.KEY_W)) {
-                    // Move camera target forward
-                    const moveX = cast(float)(cos(chunkPreviewYaw)) * moveSpeed;
-                    const moveZ = cast(float)(sin(chunkPreviewYaw)) * moveSpeed;
-                    chunkPreviewBounds.horizontal.x += moveX;
-                    chunkPreviewBounds.horizontal.y += moveZ;
-                }
-                if (IsKeyDown(KeyboardKey.KEY_S)) {
-                    // Move camera target backward
-                    const moveX = cast(float)(cos(chunkPreviewYaw)) * moveSpeed;
-                    const moveZ = cast(float)(sin(chunkPreviewYaw)) * moveSpeed;
-                    chunkPreviewBounds.horizontal.x -= moveX;
-                    chunkPreviewBounds.horizontal.y -= moveZ;
-                }
-                if (IsKeyDown(KeyboardKey.KEY_A)) {
-                    // Move camera target left
-                    const moveX = cast(float)(cos(chunkPreviewYaw + 1.5708f)) * moveSpeed;
-                    const moveZ = cast(float)(sin(chunkPreviewYaw + 1.5708f)) * moveSpeed;
-                    chunkPreviewBounds.horizontal.x += moveX;
-                    chunkPreviewBounds.horizontal.y += moveZ;
-                }
-                if (IsKeyDown(KeyboardKey.KEY_D)) {
-                    // Move camera target right
-                    const moveX = cast(float)(cos(chunkPreviewYaw - 1.5708f)) * moveSpeed;
-                    const moveZ = cast(float)(sin(chunkPreviewYaw - 1.5708f)) * moveSpeed;
-                    chunkPreviewBounds.horizontal.x += moveX;
-                    chunkPreviewBounds.horizontal.y += moveZ;
-                }
-
+                // Right mouse drag to rotate 3D view
                 if (IsMouseButtonDown(MOUSE_RIGHT_BUTTON)) {
                     const mouseDelta = GetMouseDelta();
                     chunkPreviewYaw -= mouseDelta.x * 0.01f;
@@ -3860,10 +3844,9 @@ int main()
                     const pickRay = getPreviewRay(Vector2(texMouseX, texMouseY), pickCamera, chunkPreviewTextureWidth, chunkPreviewTextureHeight);
                     const editChunkOffset = getChunkWorldOffset(placedChunks[editingChunkIndex]);
                     float wallT = float.infinity;
-                    float autoT = float.infinity;
                     const pickedWallIndex = findExplicitWallHitByRay(chunkGeometries[editingChunkIndex], pickRay, editChunkOffset, wallT, currentChunkLayer);
-                    const pickedAutoFaceIndex = findAutoWallFaceHitByRay(chunkGeometries[editingChunkIndex], pickRay, editChunkOffset, autoT, currentChunkLayer);
-                    if (pickedWallIndex >= 0 && wallT <= autoT) {
+                    // Auto-wall picking removed - use Create Walls button instead
+                    if (pickedWallIndex >= 0) {
                         selectedWallIndices = [pickedWallIndex];
                         selectedFaceIndices.length = 0;
                         selectedPointIndices.length = 0;
@@ -3871,13 +3854,8 @@ int main()
                         selectedObjectIndices.length = 0;
                         chunkEditorMessage = to!string(TextFormat("Selected wall %d from 3D view.", pickedWallIndex + 1));
                         PlaySound(applySound);
-                    } else if (pickedAutoFaceIndex >= 0) {
-                        selectedFaceIndices = [pickedAutoFaceIndex];
-                        selectedWallIndices.length = 0;
-                        selectedPointIndices.length = 0;
-                        selectedEntityIndices.length = 0;
-                        selectedObjectIndices.length = 0;
-                        chunkEditorMessage = to!string(TextFormat("Auto-wall: selected parent face %d.", pickedAutoFaceIndex + 1));
+                    } else {
+                        // Nothing picked - removed auto-wall selection
                         PlaySound(clickSound);
                     }
                 }
@@ -4048,11 +4026,8 @@ int main()
                                 chunkEditorMessage = to!string(TextFormat("Selected %d wall(s).", cast(int)selectedWallIndices.length));
                                 PlaySound(applySound);
                             } else {
-                                // Check auto-wall face edges before checking face interiors
-                                const autoWallFaceIndex = findAutoWallFaceAtEdge(chunkGeometries[editingChunkIndex], worldPosition, 7.0f / chunkEditorCamera.zoom, currentChunkLayer);
-                                const faceIndex = autoWallFaceIndex >= 0
-                                    ? autoWallFaceIndex
-                                    : findFaceAtWorldPosition(chunkGeometries[editingChunkIndex], worldPosition, 14.0f / chunkEditorCamera.zoom, currentChunkLayer);
+                                // Auto-wall edge checking removed - use Create Walls button instead
+                                const faceIndex = findFaceAtWorldPosition(chunkGeometries[editingChunkIndex], worldPosition, 14.0f / chunkEditorCamera.zoom, currentChunkLayer);
                                 if (faceIndex >= 0) {
                                     if (selectedFaceIndicesContain(selectedFaceIndices, faceIndex)) {
                                         selectedFaceIndices = selectedFaceIndices.filter!(index => index != faceIndex).array;
@@ -4063,7 +4038,7 @@ int main()
                                     selectedWallIndices.length = 0;
                                     selectedEntityIndices.length = 0;
                                     chunkEditorMessage = to!string(TextFormat("Selected %d face(s).", cast(int)selectedFaceIndices.length));
-                                    PlaySound(autoWallFaceIndex >= 0 ? applySound : clickSound);
+                                    PlaySound(clickSound);
                                 } else {
                                     isBoxSelecting = true;
                                     boxSelectStartWorld = worldPosition;
