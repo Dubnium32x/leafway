@@ -1387,21 +1387,14 @@ private int findAutoWallFaceHitByRay(ChunkGeometry geometry, Ray ray, Vector2 of
     return bestFaceIndex;
 }
 
-private Camera3D getChunkPreviewCamera(PreviewWorldBounds bounds, float yaw, float pitch, float distance)
+private Camera3D getChunkPreviewCamera(Vector3 camPos, float yaw, float pitch)
 {
-    const target = Vector3(
-        bounds.horizontal.x + bounds.horizontal.width * 0.5f,
-        (bounds.minHeight + bounds.maxHeight) * 0.5f,
-        bounds.horizontal.y + bounds.horizontal.height * 0.5f
-    );
-
+    const fwX = -cast(float)(cos(pitch) * cos(yaw));
+    const fwY = -cast(float)sin(pitch);
+    const fwZ = -cast(float)(cos(pitch) * sin(yaw));
     return Camera3D(
-        Vector3(
-            target.x + cast(float)(cos(pitch) * cos(yaw)) * distance,
-            target.y + cast(float)sin(pitch) * distance,
-            target.z + cast(float)(cos(pitch) * sin(yaw)) * distance
-        ),
-        target,
+        camPos,
+        Vector3(camPos.x + fwX, camPos.y + fwY, camPos.z + fwZ),
         Vector3(0.0f, 1.0f, 0.0f),
         45.0f,
         CameraProjection.CAMERA_PERSPECTIVE
@@ -3330,9 +3323,9 @@ int main()
     Camera2D chunkEditorCamera = Camera2D(Vector2.zero, Vector2.zero, 0.0f, 2.0f);
     float chunkPreviewYaw = 0.75f;
     float chunkPreviewPitch = 0.55f;
-    float chunkPreviewDistance = 220.0f;
-    float chunkPreviewPanX = 0.0f;
-    float chunkPreviewPanZ = 0.0f;
+    float chunkPreviewCamX = 0.0f;
+    float chunkPreviewCamY = 220.0f;
+    float chunkPreviewCamZ = 0.0f;
     ChunkTool activeChunkTool = ChunkTool.draw;
     int selectedChunkIndex = -1;
     int editingChunkIndex = -1;
@@ -3401,10 +3394,6 @@ int main()
                 [placedChunks[editingChunkIndex]],
                 editingChunkIndex < cast(int)chunkGeometries.length ? [chunkGeometries[editingChunkIndex]] : cast(ChunkGeometry[])[])
             : getChunkPreviewBounds(placedChunks, chunkGeometries);
-        // Apply persistent WASD pan offset to camera target
-        chunkPreviewBounds.horizontal.x += chunkPreviewPanX;
-        chunkPreviewBounds.horizontal.y += chunkPreviewPanZ;
-        const chunkPreviewMaxDistance = getChunkPreviewMaxDistance(chunkPreviewBounds);
         const wantsWindowClose = WindowShouldClose();
         if (wantsWindowClose && !IsKeyPressed(KeyboardKey.KEY_ESCAPE)) {
             break;
@@ -3583,9 +3572,15 @@ int main()
                         chunkEditorCamera.zoom = 2.0f;
                         chunkPreviewYaw = 0.75f;
                         chunkPreviewPitch = 0.55f;
-                        chunkPreviewDistance = getChunkPreviewDefaultDistance(chunkPreviewBounds);
-                        chunkPreviewPanX = 0.0f;
-                        chunkPreviewPanZ = 0.0f;
+                        {
+                            const defaultDist = getChunkPreviewDefaultDistance(chunkPreviewBounds);
+                            const ctrX = chunkPreviewBounds.horizontal.x + chunkPreviewBounds.horizontal.width * 0.5f;
+                            const ctrY = (chunkPreviewBounds.minHeight + chunkPreviewBounds.maxHeight) * 0.5f;
+                            const ctrZ = chunkPreviewBounds.horizontal.y + chunkPreviewBounds.horizontal.height * 0.5f;
+                            chunkPreviewCamX = ctrX + cast(float)(cos(0.55f) * cos(0.75f)) * defaultDist;
+                            chunkPreviewCamY = ctrY + cast(float)sin(0.55f) * defaultDist;
+                            chunkPreviewCamZ = ctrZ + cast(float)(cos(0.55f) * sin(0.75f)) * defaultDist;
+                        }
                         chunkUndoStack.length = 0;
                         currentChunkLayer = 0;
                         PlaySound(connectSound);
@@ -3678,34 +3673,49 @@ int main()
                 // WASD camera movement in 3D view (works anywhere in chunk editor)
                 const moveSpeed = 8.0f;
                 if (IsKeyDown(KeyboardKey.KEY_W)) {
-                    chunkPreviewPanX -= cast(float)(cos(chunkPreviewYaw)) * moveSpeed;
-                    chunkPreviewPanZ -= cast(float)(sin(chunkPreviewYaw)) * moveSpeed;
+                    chunkPreviewCamX -= cast(float)(cos(chunkPreviewYaw)) * moveSpeed;
+                    chunkPreviewCamZ -= cast(float)(sin(chunkPreviewYaw)) * moveSpeed;
                 }
                 if (IsKeyDown(KeyboardKey.KEY_S)) {
-                    chunkPreviewPanX += cast(float)(cos(chunkPreviewYaw)) * moveSpeed;
-                    chunkPreviewPanZ += cast(float)(sin(chunkPreviewYaw)) * moveSpeed;
+                    chunkPreviewCamX += cast(float)(cos(chunkPreviewYaw)) * moveSpeed;
+                    chunkPreviewCamZ += cast(float)(sin(chunkPreviewYaw)) * moveSpeed;
                 }
                 if (IsKeyDown(KeyboardKey.KEY_A)) {
-                    chunkPreviewPanX += cast(float)(cos(chunkPreviewYaw + 1.5708f)) * moveSpeed;
-                    chunkPreviewPanZ += cast(float)(sin(chunkPreviewYaw + 1.5708f)) * moveSpeed;
+                    chunkPreviewCamX += cast(float)(cos(chunkPreviewYaw + 1.5708f)) * moveSpeed;
+                    chunkPreviewCamZ += cast(float)(sin(chunkPreviewYaw + 1.5708f)) * moveSpeed;
                 }
                 if (IsKeyDown(KeyboardKey.KEY_D)) {
-                    chunkPreviewPanX += cast(float)(cos(chunkPreviewYaw - 1.5708f)) * moveSpeed;
-                    chunkPreviewPanZ += cast(float)(sin(chunkPreviewYaw - 1.5708f)) * moveSpeed;
+                    chunkPreviewCamX += cast(float)(cos(chunkPreviewYaw - 1.5708f)) * moveSpeed;
+                    chunkPreviewCamZ += cast(float)(sin(chunkPreviewYaw - 1.5708f)) * moveSpeed;
                 }
 
                 // T key: Toggle top-down view
                 if (IsKeyPressed(KeyboardKey.KEY_T)) {
                     if (chunkPreviewPitch > 1.4f) {
                         // Currently near top-down, reset to default angle
-                        chunkPreviewPitch = 0.55f;
                         chunkPreviewYaw = 0.75f;
-                        chunkPreviewPanX = 0.0f;
-                        chunkPreviewPanZ = 0.0f;
+                        chunkPreviewPitch = 0.55f;
+                        {
+                            const defaultDist = getChunkPreviewDefaultDistance(chunkPreviewBounds);
+                            const ctrX = chunkPreviewBounds.horizontal.x + chunkPreviewBounds.horizontal.width * 0.5f;
+                            const ctrY = (chunkPreviewBounds.minHeight + chunkPreviewBounds.maxHeight) * 0.5f;
+                            const ctrZ = chunkPreviewBounds.horizontal.y + chunkPreviewBounds.horizontal.height * 0.5f;
+                            chunkPreviewCamX = ctrX + cast(float)(cos(0.55f) * cos(0.75f)) * defaultDist;
+                            chunkPreviewCamY = ctrY + cast(float)sin(0.55f) * defaultDist;
+                            chunkPreviewCamZ = ctrZ + cast(float)(cos(0.55f) * sin(0.75f)) * defaultDist;
+                        }
                         chunkEditorMessage = "3D view reset to default angle.";
                     } else {
                         // Switch to top-down view (clamped just under 90° to avoid gimbal lock)
                         chunkPreviewPitch = 1.50f;
+                        {
+                            const defaultDist = getChunkPreviewDefaultDistance(chunkPreviewBounds);
+                            const ctrX = chunkPreviewBounds.horizontal.x + chunkPreviewBounds.horizontal.width * 0.5f;
+                            const ctrZ = chunkPreviewBounds.horizontal.y + chunkPreviewBounds.horizontal.height * 0.5f;
+                            chunkPreviewCamX = ctrX;
+                            chunkPreviewCamY = (chunkPreviewBounds.minHeight + chunkPreviewBounds.maxHeight) * 0.5f + defaultDist;
+                            chunkPreviewCamZ = ctrZ;
+                        }
                         chunkEditorMessage = "3D view: Top-down mode.";
                     }
                     PlaySound(clickSound);
@@ -3819,9 +3829,10 @@ int main()
             if (mouseInsidePreview) {
                 const previewWheel = GetMouseWheelMove();
                 if (previewWheel != 0.0f) {
-                    chunkPreviewDistance -= previewWheel * 16.0f;
-                    if (chunkPreviewDistance < 48.0f) chunkPreviewDistance = 48.0f;
-                    if (chunkPreviewDistance > chunkPreviewMaxDistance) chunkPreviewDistance = chunkPreviewMaxDistance;
+                    const scrollSpeed = previewWheel * 16.0f;
+                    chunkPreviewCamX -= cast(float)(cos(chunkPreviewPitch) * cos(chunkPreviewYaw)) * scrollSpeed;
+                    chunkPreviewCamY -= cast(float)sin(chunkPreviewPitch) * scrollSpeed;
+                    chunkPreviewCamZ -= cast(float)(cos(chunkPreviewPitch) * sin(chunkPreviewYaw)) * scrollSpeed;
                 }
 
                 // Right mouse drag to rotate 3D view
@@ -3834,7 +3845,7 @@ int main()
                 }
 
                 if (IsMouseButtonPressed(MouseButton.MOUSE_BUTTON_LEFT)) {
-                    const pickCamera = getChunkPreviewCamera(chunkPreviewBounds, chunkPreviewYaw, chunkPreviewPitch, chunkPreviewDistance);
+                    const pickCamera = getChunkPreviewCamera(Vector3(chunkPreviewCamX, chunkPreviewCamY, chunkPreviewCamZ), chunkPreviewYaw, chunkPreviewPitch);
                     const texMouseX = mousePosition.x - chunkPreviewContentRect.x;
                     const texMouseY = mousePosition.y - chunkPreviewContentRect.y;
                     const pickRay = getPreviewRay(Vector2(texMouseX, texMouseY), pickCamera, chunkPreviewTextureWidth, chunkPreviewTextureHeight);
@@ -4294,7 +4305,7 @@ int main()
                     currentChunkLayer
                 );
 
-                const previewCamera = getChunkPreviewCamera(chunkPreviewBounds, chunkPreviewYaw, chunkPreviewPitch, chunkPreviewDistance);
+                const previewCamera = getChunkPreviewCamera(Vector3(chunkPreviewCamX, chunkPreviewCamY, chunkPreviewCamZ), chunkPreviewYaw, chunkPreviewPitch);
                 renderChunkPreview3D(chunkPreviewTexture, previewCamera, placedChunks, chunkGeometries, editingChunkIndex, chunkPreviewBounds, ditherImage);
                 GuiPanel(chunkPreviewPanelRect, "3D Preview");
                 DrawTexturePro(
