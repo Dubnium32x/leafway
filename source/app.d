@@ -3678,12 +3678,12 @@ int main()
                 // WASD camera movement in 3D view (works anywhere in chunk editor)
                 const moveSpeed = 8.0f;
                 if (IsKeyDown(KeyboardKey.KEY_W)) {
-                    chunkPreviewPanX += cast(float)(cos(chunkPreviewYaw)) * moveSpeed;
-                    chunkPreviewPanZ += cast(float)(sin(chunkPreviewYaw)) * moveSpeed;
-                }
-                if (IsKeyDown(KeyboardKey.KEY_S)) {
                     chunkPreviewPanX -= cast(float)(cos(chunkPreviewYaw)) * moveSpeed;
                     chunkPreviewPanZ -= cast(float)(sin(chunkPreviewYaw)) * moveSpeed;
+                }
+                if (IsKeyDown(KeyboardKey.KEY_S)) {
+                    chunkPreviewPanX += cast(float)(cos(chunkPreviewYaw)) * moveSpeed;
+                    chunkPreviewPanZ += cast(float)(sin(chunkPreviewYaw)) * moveSpeed;
                 }
                 if (IsKeyDown(KeyboardKey.KEY_A)) {
                     chunkPreviewPanX += cast(float)(cos(chunkPreviewYaw + 1.5708f)) * moveSpeed;
@@ -3704,8 +3704,8 @@ int main()
                         chunkPreviewPanZ = 0.0f;
                         chunkEditorMessage = "3D view reset to default angle.";
                     } else {
-                        // Switch to top-down view
-                        chunkPreviewPitch = 1.5708f;  // 90 degrees (straight down)
+                        // Switch to top-down view (clamped just under 90° to avoid gimbal lock)
+                        chunkPreviewPitch = 1.50f;
                         chunkEditorMessage = "3D view: Top-down mode.";
                     }
                     PlaySound(clickSound);
@@ -3828,10 +3828,9 @@ int main()
                 if (IsMouseButtonDown(MOUSE_RIGHT_BUTTON)) {
                     const mouseDelta = GetMouseDelta();
                     chunkPreviewYaw -= mouseDelta.x * 0.01f;
-                    chunkPreviewPitch -= mouseDelta.y * 0.01f;
-                    // Allow rotation under the map: -90 to +90 degrees (in radians: -1.5708 to 1.5708)
-                    if (chunkPreviewPitch < -1.5708f) chunkPreviewPitch = -1.5708f;
-                    if (chunkPreviewPitch > 1.5708f) chunkPreviewPitch = 1.5708f;
+                    chunkPreviewPitch -= mouseDelta.y * 0.005f;
+                    if (chunkPreviewPitch < -1.50f) chunkPreviewPitch = -1.50f;
+                    if (chunkPreviewPitch > 1.50f) chunkPreviewPitch = 1.50f;
                 }
 
                 if (IsMouseButtonPressed(MouseButton.MOUSE_BUTTON_LEFT)) {
