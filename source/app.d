@@ -240,6 +240,20 @@ private int getDefaultAssetId(AssetDefinition[] catalog)
     return catalog.length > 0 ? catalog[0].id : 0;
 }
 
+private bool normalizeSelectedAssetId(ref int currentId, AssetDefinition[] catalog)
+{
+    if (catalog.length == 0) {
+        currentId = 0;
+        return false;
+    }
+
+    if (!assetCatalogHasId(catalog, currentId)) {
+        currentId = getDefaultAssetId(catalog);
+    }
+
+    return true;
+}
+
 private string getAssetDisplayName(AssetDefinition[] catalog, int assetId, string fallbackPrefix)
 {
     foreach (asset; catalog) {
@@ -2156,6 +2170,18 @@ private void setMapChunkTool(ref ChunkTool activeChunkTool, ChunkTool nextTool, 
 
 private void setChunkEditorTool(ref ChunkEditorTool chunkEditorTool, ChunkEditorTool nextTool, ref string chunkEditorMessage, Sound clickSound)
 {
+    if (nextTool == ChunkEditorTool.placeEntity && gEntityDefinitions.length == 0) {
+        chunkEditorMessage = "No entity assets found. Add files like resources/data/entities/0_player.png and restart Leafway.";
+        PlaySound(clickSound);
+        return;
+    }
+
+    if (nextTool == ChunkEditorTool.placeObject && gObjectDefinitions.length == 0) {
+        chunkEditorMessage = "No object assets found. Add files like resources/data/objects/0_crate.obj and restart Leafway.";
+        PlaySound(clickSound);
+        return;
+    }
+
     chunkEditorTool = nextTool;
     
     final switch (nextTool) {
@@ -3494,6 +3520,9 @@ int main()
             }
         }
 
+        normalizeSelectedAssetId(currentEntityType, gEntityDefinitions);
+        normalizeSelectedAssetId(currentObjectType, gObjectDefinitions);
+
         if (hasActiveMap && selectedToolbarIndex < 0 && appScreen == AppScreen.map) {
             const mouseInsideCanvas = CheckCollisionPointRec(mousePosition, canvasRect);
             const wheelMove = mouseInsideCanvas ? GetMouseWheelMove() : 0.0f;
@@ -4002,7 +4031,7 @@ int main()
                         PlaySound(touchSound);
                     }
                 } else if (chunkEditorTool == ChunkEditorTool.placeEntity) {
-                    if (gEntityDefinitions.length == 0) {
+                    if (!normalizeSelectedAssetId(currentEntityType, gEntityDefinitions)) {
                         chunkEditorMessage = "No entity assets found. Add files like resources/data/entities/0_player.png and restart Leafway.";
                         PlaySound(touchSound);
                         continue;
@@ -4025,7 +4054,7 @@ int main()
                     chunkEditorMessage = format("Placed entity: %s at %.1f, %.1f, %.1f.", getEntityTypeName(currentEntityType), worldPosition.x, newEntity.y, worldPosition.y);
                     PlaySound(placeSound);
                 } else if (chunkEditorTool == ChunkEditorTool.placeObject) {
-                    if (gObjectDefinitions.length == 0) {
+                    if (!normalizeSelectedAssetId(currentObjectType, gObjectDefinitions)) {
                         chunkEditorMessage = "No object assets found. Add files like resources/data/objects/0_crate.obj and restart Leafway.";
                         PlaySound(touchSound);
                         continue;
@@ -4449,6 +4478,10 @@ int main()
                         return contentAreaTop + relY - chunkInspectorScrollY;
                     }
 
+                    const showEntityAssetHint = chunkEditorTool == ChunkEditorTool.placeEntity && gEntityDefinitions.length == 0;
+                    const showObjectAssetHint = chunkEditorTool == ChunkEditorTool.placeObject && gObjectDefinitions.length == 0;
+                    const toolHintOffsetY = (showEntityAssetHint || showObjectAssetHint) ? 64.0f : 0.0f;
+
                     BeginScissorMode(cast(int)contentAreaRect.x, cast(int)contentAreaRect.y, cast(int)contentAreaRect.width, cast(int)contentAreaRect.height);
 
                     if (chunkEditorTool == ChunkEditorTool.placePoint) {
@@ -4489,7 +4522,7 @@ int main()
                             }
                         }
 
-                        if (gEntityDefinitions.length == 0) {
+                        if (showEntityAssetHint) {
                             drawWrappedLabel(
                                 Rectangle(inspectorRect.x + 16.0f, iy(84.0f), inspectorRect.width - 32.0f, 56.0f),
                                 "Add PNGs like resources/data/entities/0_player.png, then restart Leafway."
@@ -4511,7 +4544,7 @@ int main()
                         }
 
                         GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(56.0f), 100.0f, 24.0f), TextFormat("Rotation: %.0f", currentEntityRotationY));
-                        if (GuiButton(Rectangle(inspectorRect.x + 108.0f, iy(26.0f), 24.0f, 24.0f), "<")) {
+                        if (GuiButton(Rectangle(inspectorRect.x + 108.0f, iy(54.0f), 24.0f, 24.0f), "<")) {
                             currentEntityRotationY -= 15.0f;
                             if (currentEntityRotationY < 0.0f) currentEntityRotationY += 360.0f;
                             PlaySound(clickSound);
@@ -4545,7 +4578,7 @@ int main()
                             }
                         }
 
-                        if (gObjectDefinitions.length == 0) {
+                        if (showObjectAssetHint) {
                             drawWrappedLabel(
                                 Rectangle(inspectorRect.x + 16.0f, iy(84.0f), inspectorRect.width - 32.0f, 56.0f),
                                 "Add OBJs like resources/data/objects/0_crate.obj, then restart Leafway."
@@ -4583,7 +4616,7 @@ int main()
                         }
                     }
 
-                    if (GuiButton(Rectangle(inspectorRect.x + 16.0f, iy(84.0f), 116.0f, 28.0f), "Create Face")) {
+                    if (GuiButton(Rectangle(inspectorRect.x + 16.0f, iy(84.0f + toolHintOffsetY), 116.0f, 28.0f), "Create Face")) {
                         pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
                         createSelectedFace(
                             chunkGeometries[editingChunkIndex],
@@ -4596,7 +4629,7 @@ int main()
                         );
                     }
 
-                    if (GuiButton(Rectangle(inspectorRect.x + 140.0f, iy(84.0f), 116.0f, 28.0f), "Delete Face")) {
+                    if (GuiButton(Rectangle(inspectorRect.x + 140.0f, iy(84.0f + toolHintOffsetY), 116.0f, 28.0f), "Delete Face")) {
                         pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
                         deleteSelectedFaces(
                             chunkGeometries[editingChunkIndex],
@@ -4607,7 +4640,7 @@ int main()
                         );
                     }
 
-                    if (GuiButton(Rectangle(inspectorRect.x + 16.0f, iy(120.0f), 116.0f, 28.0f), "Create Wall")) {
+                    if (GuiButton(Rectangle(inspectorRect.x + 16.0f, iy(120.0f + toolHintOffsetY), 116.0f, 28.0f), "Create Wall")) {
                         pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
                         createSelectedWall(
                             chunkGeometries[editingChunkIndex],
@@ -4621,7 +4654,7 @@ int main()
                         );
                     }
 
-                    if (GuiButton(Rectangle(inspectorRect.x + 140.0f, iy(120.0f), 116.0f, 28.0f), "Delete Wall")) {
+                    if (GuiButton(Rectangle(inspectorRect.x + 140.0f, iy(120.0f + toolHintOffsetY), 116.0f, 28.0f), "Delete Wall")) {
                         pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
                         deleteSelectedWalls(
                             chunkGeometries[editingChunkIndex],
@@ -4632,7 +4665,7 @@ int main()
                         );
                     }
 
-                    if (GuiButton(Rectangle(inspectorRect.x + 16.0f, iy(156.0f), 116.0f, 28.0f), "Delete Point")) {
+                    if (GuiButton(Rectangle(inspectorRect.x + 16.0f, iy(156.0f + toolHintOffsetY), 116.0f, 28.0f), "Delete Point")) {
                         deleteSelectedPoints(
                             chunkGeometries[editingChunkIndex],
                             selectedPointIndices,
@@ -4646,11 +4679,11 @@ int main()
                         );
                     }
 
-                    if (GuiButton(Rectangle(inspectorRect.x + 140.0f, iy(156.0f), 116.0f, 28.0f), "Back to Map")) {
+                    if (GuiButton(Rectangle(inspectorRect.x + 140.0f, iy(156.0f + toolHintOffsetY), 116.0f, 28.0f), "Back to Map")) {
                         shouldReturnToMap = true;
                     }
 
-                    if (GuiButton(Rectangle(inspectorRect.x + 16.0f, iy(192.0f), 116.0f, 28.0f), "Delete Entity")) {
+                    if (GuiButton(Rectangle(inspectorRect.x + 16.0f, iy(192.0f + toolHintOffsetY), 116.0f, 28.0f), "Delete Entity")) {
                         pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
                         deleteSelectedEntities(
                             chunkGeometries[editingChunkIndex],
@@ -4661,7 +4694,7 @@ int main()
                         );
                     }
 
-                    if (GuiButton(Rectangle(inspectorRect.x + 140.0f, iy(192.0f), 116.0f, 28.0f), "Delete Object")) {
+                    if (GuiButton(Rectangle(inspectorRect.x + 140.0f, iy(192.0f + toolHintOffsetY), 116.0f, 28.0f), "Delete Object")) {
                         pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
                         deleteSelectedObjects(
                             chunkGeometries[editingChunkIndex],
@@ -4672,7 +4705,7 @@ int main()
                         );
                     }
 
-                    GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(228.0f), inspectorRect.width - 32.0f, 24.0f), TextFormat("Bounds: %d x %d   Zoom: %d%%", editingChunk.width * cast(int)mapGridCellSize, editingChunk.height * cast(int)mapGridCellSize, cast(int)(chunkEditorCamera.zoom * 100.0f)));
+                    GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(228.0f + toolHintOffsetY), inspectorRect.width - 32.0f, 24.0f), TextFormat("Bounds: %d x %d   Zoom: %d%%", editingChunk.width * cast(int)mapGridCellSize, editingChunk.height * cast(int)mapGridCellSize, cast(int)(chunkEditorCamera.zoom * 100.0f)));
 
                     if (selectedFaceIndices.length != 1) {
                         faceFloorEditMode = false;
