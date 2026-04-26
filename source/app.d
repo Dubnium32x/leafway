@@ -4003,7 +4003,7 @@ int main()
                     }
                 } else if (chunkEditorTool == ChunkEditorTool.placeEntity) {
                     if (gEntityDefinitions.length == 0) {
-                        chunkEditorMessage = "No entity assets found in resources/data/entities.";
+                        chunkEditorMessage = "No entity assets found. Add files like resources/data/entities/0_player.png and restart Leafway.";
                         PlaySound(touchSound);
                         continue;
                     }
@@ -4026,7 +4026,7 @@ int main()
                     PlaySound(placeSound);
                 } else if (chunkEditorTool == ChunkEditorTool.placeObject) {
                     if (gObjectDefinitions.length == 0) {
-                        chunkEditorMessage = "No object assets found in resources/data/objects.";
+                        chunkEditorMessage = "No object assets found. Add files like resources/data/objects/0_crate.obj and restart Leafway.";
                         PlaySound(touchSound);
                         continue;
                     }
@@ -4489,6 +4489,13 @@ int main()
                             }
                         }
 
+                        if (gEntityDefinitions.length == 0) {
+                            drawWrappedLabel(
+                                Rectangle(inspectorRect.x + 16.0f, iy(84.0f), inspectorRect.width - 32.0f, 56.0f),
+                                "Add PNGs like resources/data/entities/0_player.png, then restart Leafway."
+                            );
+                        }
+
                         GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(28.0f), 100.0f, 24.0f), TextFormat("Y Offset: %.1f", currentEntityHeight));
                         if (GuiButton(Rectangle(inspectorRect.x + 108.0f, iy(26.0f), 24.0f, 24.0f), "-")) {
                             currentEntityHeight -= 1.0f;
@@ -4536,6 +4543,13 @@ int main()
                             } else {
                                 PlaySound(touchSound);
                             }
+                        }
+
+                        if (gObjectDefinitions.length == 0) {
+                            drawWrappedLabel(
+                                Rectangle(inspectorRect.x + 16.0f, iy(84.0f), inspectorRect.width - 32.0f, 56.0f),
+                                "Add OBJs like resources/data/objects/0_crate.obj, then restart Leafway."
+                            );
                         }
 
                         GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(28.0f), 100.0f, 24.0f), TextFormat("Y Offset: %.1f", currentObjectHeight));
