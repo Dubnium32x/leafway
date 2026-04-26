@@ -16,7 +16,7 @@ import std.string : strip;
 import std.process : execute, executeShell;
 import core.stdc.math : fmod, floor, atan2, sin, cos, fabs, sqrt, tan;
 import std.file;
-import std.path : baseName, buildPath;
+import std.path : baseName, buildPath, extension;
 import std.array;
 import std.exception;
 import std.algorithm;
@@ -64,37 +64,22 @@ enum ChunkEditorTool {
     placeObject,
 }
 
-enum EntityType {
-    player,
-    npc,
-    fishCommon,
-    fishRare,
-    fishLegendary,
-    bird,
-    insect,
-    treasureChest,
-    festivalDecoration,
+enum entityAssetDirectory = "resources/data/entities";
+enum objectAssetDirectory = "resources/data/objects";
+
+struct AssetDefinition {
+    int id;
+    string name;
+    string fileName;
+    string filePath;
 }
 
-enum ObjectType {
-    hut,
-    tree,
-    rock,
-    crate,
-    chair,
-    table,
-    boat,
-    dock,
-    building,
-    buoy,
-    fishingNet,
-    coral,
-    underwaterRock,
-    festivalProp,
-}
+private AssetDefinition[] gEntityDefinitions;
+private AssetDefinition[] gObjectDefinitions;
 
 struct ChunkEntity {
     float x;
+    float y;
     float z;
     float rotationX;
     float rotationY;  // Yaw - horizontal rotation (look direction)
@@ -102,7 +87,7 @@ struct ChunkEntity {
     float scaleX;
     float scaleY;
     float scaleZ;
-    EntityType type;
+    int type;
     int layer = 0;
 }
 
@@ -116,7 +101,7 @@ struct ChunkObject {
     float scaleX;
     float scaleY;
     float scaleZ;
-    ObjectType type;
+    int type;
     int layer = 0;
 }
 
@@ -134,6 +119,7 @@ struct ChunkFace {
     bool autoWallFromHeightDifference;
     bool sameFloorAndCeiling;
     int layer = 0;
+    bool isWater = false;
 }
 
 struct ChunkWall {
@@ -183,6 +169,161 @@ private int positiveModulo(int value, int divisor)
 {
     const remainder = value % divisor;
     return remainder < 0 ? remainder + divisor : remainder;
+}
+
+private string prettifyAssetName(string rawName)
+{
+    return rawName.replace("_", " ").replace("-", " ").strip().idup;
+}
+
+private bool assetCatalogHasId(AssetDefinition[] catalog, int assetId)
+{
+    foreach (asset; catalog) {
+        if (asset.id == assetId) {
+            return true;
+        }
+    }
+    return false;
+}
+
+private AssetDefinition[] loadAssetDefinitions(string directoryPath, string expectedExtension)
+{
+    AssetDefinition[] definitions;
+
+    if (!exists(directoryPath) || !isDir(directoryPath)) {
+        return definitions;
+    }
+
+    foreach (entry; dirEntries(directoryPath, SpanMode.shallow)) {
+        if (entry.isDir) {
+            continue;
+        }
+
+        const fileName = baseName(entry.name);
+        const fileExtension = extension(fileName).toLower();
+        if (fileExtension != expectedExtension) {
+            continue;
+        }
+
+        const stem = fileName[0 .. $ - fileExtension.length];
+        const separatorIndex = cast(int)indexOf(stem, "_");
+        if (separatorIndex <= 0 || separatorIndex >= cast(int)stem.length - 1) {
+            continue;
+        }
+
+        int assetId;
+        try {
+            assetId = stem[0 .. separatorIndex].to!int;
+        } catch (Exception) {
+            continue;
+        }
+
+        if (assetCatalogHasId(definitions, assetId)) {
+            continue;
+        }
+
+        const rawName = stem[separatorIndex + 1 .. $];
+        const displayName = prettifyAssetName(rawName);
+        if (displayName.length == 0) {
+            continue;
+        }
+
+        definitions ~= AssetDefinition(assetId, displayName, fileName.idup, entry.name.idup);
+    }
+
+    definitions.sort!((a, b) => a.id < b.id);
+    return definitions;
+}
+
+private int getDefaultAssetId(AssetDefinition[] catalog)
+{
+    return catalog.length > 0 ? catalog[0].id : 0;
+}
+
+private string getAssetDisplayName(AssetDefinition[] catalog, int assetId, string fallbackPrefix)
+{
+    foreach (asset; catalog) {
+        if (asset.id == assetId) {
+            return asset.name;
+        }
+    }
+    return fallbackPrefix ~ " " ~ to!string(assetId);
+}
+
+private bool stepAssetId(ref int currentId, AssetDefinition[] catalog, int direction)
+{
+    if (catalog.length == 0) {
+        return false;
+    }
+
+    int currentIndex = -1;
+    foreach (index, asset; catalog) {
+        if (asset.id == currentId) {
+            currentIndex = cast(int)index;
+            break;
+        }
+    }
+
+    if (currentIndex < 0) {
+        currentId = getDefaultAssetId(catalog);
+        return true;
+    }
+
+    const nextIndex = currentIndex + direction;
+    if (nextIndex < 0 || nextIndex >= cast(int)catalog.length) {
+        return false;
+    }
+
+    currentId = catalog[nextIndex].id;
+    return true;
+}
+
+private uint hashLabel(string label, int seed)
+{
+    uint hash = cast(uint)(2166136261u ^ seed);
+    foreach (ch; label) {
+        hash ^= cast(ubyte)ch;
+        hash *= 16777619u;
+    }
+    return hash;
+}
+
+private Color getCatalogColor(AssetDefinition[] catalog, int assetId, string fallbackPrefix, bool bright)
+{
+    const label = getAssetDisplayName(catalog, assetId, fallbackPrefix);
+    const hash = hashLabel(label, assetId * (bright ? 17 : 29) + (bright ? 7 : 13));
+    const base = bright ? 96 : 72;
+    const span = bright ? 144 : 120;
+    const red = cast(ubyte)(base + (hash & 0x3F) % span);
+    const green = cast(ubyte)(base + ((hash >> 6) & 0x3F) % span);
+    const blue = cast(ubyte)(base + ((hash >> 12) & 0x3F) % span);
+    return Color(red, green, blue, 255);
+}
+
+private Color getEntityPreviewColor(int entityType)
+{
+    return getCatalogColor(gEntityDefinitions, entityType, "Entity", true);
+}
+
+private Color getObjectPreviewColor(int objectType)
+{
+    return getCatalogColor(gObjectDefinitions, objectType, "Object", false);
+}
+
+private Color getWaterFaceColor()
+{
+    return Color(72, 146, 220, 255);
+}
+
+private Color getFacePreviewColor(Image ditherImage, const ChunkFace face)
+{
+    return face.isWater ? getWaterFaceColor() : getPalettePreviewColor(ditherImage, face.paletteIndex);
+}
+
+private const(char)* cstring(string value)
+{
+    import std.string : toStringz;
+    return toStringz(value);
 }
 
 private Rectangle getMapCanvasRect(bool showInspector)
@@ -930,6 +1071,11 @@ private void drawFilledFace(ChunkGeometry geometry, ChunkFace face, Color fillCo
 
 private void drawPixelatedPaletteFace(ChunkGeometry geometry, ChunkFace face, Image ditherImage, float opacity, Vector2 offset = Vector2.zero)
 {
+    if (face.isWater) {
+        drawFilledFace(geometry, face, Fade(getWaterFaceColor(), opacity), offset);
+        return;
+    }
+
     auto polygonPoints = getFacePolygonPoints(geometry, face, offset);
     if (polygonPoints.length < 3) {
         return;
@@ -964,7 +1110,7 @@ private void drawPixelatedPaletteFace(ChunkGeometry geometry, ChunkFace face, Im
 
 private void drawPaletteFace(ChunkGeometry geometry, ChunkFace face, Image ditherImage, float opacity, Vector2 offset = Vector2.zero)
 {
-    const baseColor = getPalettePreviewColor(ditherImage, face.paletteIndex);
+    const baseColor = getFacePreviewColor(ditherImage, face);
     drawFilledFace(geometry, face, Fade(baseColor, opacity), offset);
 }
 
@@ -1083,7 +1229,7 @@ private void drawChunkFacePreview3D(ChunkGeometry geometry, ChunkFace face, Imag
     centroid2D.x /= polygonPoints.length;
     centroid2D.y /= polygonPoints.length;
 
-    const baseColor = getPalettePreviewColor(ditherImage, face.paletteIndex);
+    const baseColor = getFacePreviewColor(ditherImage, face);
     const floorColor = baseColor;
     const ceilingBrightness = cast(ubyte)(baseColor.r + (255 - baseColor.r) / 4);
     const ceilingColor = Color(ceilingBrightness, ceilingBrightness, ceilingBrightness, 255);
@@ -1196,7 +1342,7 @@ private void drawChunkAutoWallsPreview3D(ChunkGeometry geometry, int faceIndex, 
         return;
     }
 
-    const wallColor = getPalettePreviewColor(ditherImage, face.paletteIndex);
+    const wallColor = getFacePreviewColor(ditherImage, face);
 
     for (int index = 0; index < cast(int)face.pointIndices.length; index++) {
         const pointAIndex = face.pointIndices[index];
@@ -1443,20 +1589,8 @@ private void renderChunkPreview3D(
             }
 
             foreach (entity; chunkGeometries[index].entities) {
-                const floorY = getFloorHeightAtXZ(chunkGeometries[index], entity.x, entity.z);
-                const entityPos = Vector3(chunkOffset.x + entity.x, floorY, chunkOffset.y + entity.z);
-                Color entityColor;
-                final switch (entity.type) {
-                    case EntityType.player:             entityColor = Colors.GREEN; break;
-                    case EntityType.npc:                entityColor = Colors.ORANGE; break;
-                    case EntityType.fishCommon:         entityColor = Colors.SKYBLUE; break;
-                    case EntityType.fishRare:           entityColor = Colors.BLUE; break;
-                    case EntityType.fishLegendary:      entityColor = Colors.GOLD; break;
-                    case EntityType.bird:               entityColor = Color(135, 206, 235, 255); break;
-                    case EntityType.insect:             entityColor = Color(100, 200, 50, 255); break;
-                    case EntityType.treasureChest:      entityColor = Colors.YELLOW; break;
-                    case EntityType.festivalDecoration: entityColor = Colors.VIOLET; break;
-                }
+                const entityPos = Vector3(chunkOffset.x + entity.x, entity.y, chunkOffset.y + entity.z);
+                const entityColor = getEntityPreviewColor(entity.type);
                 DrawCylinder(entityPos, 4.0f, 4.0f, 16.0f, 6, entityColor);
                 DrawCylinderWires(entityPos, 4.0f, 4.0f, 16.0f, 6, Fade(Colors.BLACK, 0.5f));
                 const dirLen = 10.0f;
@@ -1470,23 +1604,7 @@ private void renderChunkPreview3D(
 
             foreach (obj; chunkGeometries[index].objects) {
                 const objPos = Vector3(chunkOffset.x + obj.x, obj.y, chunkOffset.y + obj.z);
-                Color objColor;
-                final switch (obj.type) {
-                    case ObjectType.hut:           objColor = Color(160, 120, 80, 255); break;
-                    case ObjectType.tree:          objColor = Color(34, 85, 34, 255); break;
-                    case ObjectType.rock:          objColor = Colors.GRAY; break;
-                    case ObjectType.crate:         objColor = Color(139, 90, 43, 255); break;
-                    case ObjectType.chair:         objColor = Color(180, 140, 90, 255); break;
-                    case ObjectType.table:         objColor = Color(200, 160, 100, 255); break;
-                    case ObjectType.boat:          objColor = Color(70, 130, 180, 255); break;
-                    case ObjectType.dock:          objColor = Color(101, 67, 33, 255); break;
-                    case ObjectType.building:      objColor = Color(180, 160, 120, 255); break;
-                    case ObjectType.buoy:          objColor = Colors.RED; break;
-                    case ObjectType.fishingNet:    objColor = Color(200, 200, 150, 255); break;
-                    case ObjectType.coral:         objColor = Color(255, 127, 80, 255); break;
-                    case ObjectType.underwaterRock:objColor = Color(100, 120, 140, 255); break;
-                    case ObjectType.festivalProp:  objColor = Colors.PINK; break;
-                }
+                const objColor = getObjectPreviewColor(obj.type);
                 DrawCube(objPos, 8.0f, 8.0f, 8.0f, objColor);
                 DrawCubeWiresV(objPos, Vector3(8.0f, 8.0f, 8.0f), Fade(Colors.BLACK, 0.5f));
                 const dirLen = 10.0f;
@@ -1801,61 +1919,36 @@ private void drawChunkEditorCanvas(
         const entityPosition = Vector2(entity.x, entity.z);
         const isSelected = selectedEntityIndicesContain(selectedEntityIndices, cast(int)entityIndex);
         const entityDim = (entity.layer == currentChunkLayer) ? 1.0f : 0.28f;
-        
-        Color entityColor;
-        final switch (entity.type) {
-        case EntityType.player:
-            entityColor = Colors.GREEN;
-            break;
-        case EntityType.npc:
-            entityColor = Colors.ORANGE;
-            break;
-        case EntityType.fishCommon:
-            entityColor = Colors.SKYBLUE;
-            break;
-        case EntityType.fishRare:
-            entityColor = Colors.BLUE;
-            break;
-        case EntityType.fishLegendary:
-            entityColor = Colors.GOLD;
-            break;
-        case EntityType.bird:
-            entityColor = Color(135, 206, 235, 255);
-            break;
-        case EntityType.insect:
-            entityColor = Color(100, 200, 50, 255);
-            break;
-        case EntityType.treasureChest:
-            entityColor = Colors.YELLOW;
-            break;
-        case EntityType.festivalDecoration:
-            entityColor = Colors.VIOLET;
-            break;
-        }
+        const entityColor = getEntityPreviewColor(entity.type);
+        const showEntityDetails = isSelected || gridLayout.camera.zoom >= 3.0f;
         
         const radius = (isSelected ? 7.0f : 5.0f) / gridLayout.camera.zoom;
         DrawCircleV(entityPosition, radius, Fade(entityColor, 0.85f * entityDim));
         DrawCircleLinesV(entityPosition, radius * 1.2f, isSelected ? Fade(Colors.WHITE, 0.98f * entityDim) : Fade(Colors.BLACK, 0.60f * entityDim));
         
-        // Draw purple direction indicator
-        const directionLength = radius * 2.2f;
-        const directionAngle = entity.rotationY * (3.14159265f / 180.0f); // Convert to radians
-        const directionEndX = entityPosition.x + cos(directionAngle) * directionLength;
-        const directionEndY = entityPosition.y + sin(directionAngle) * directionLength;
-        const directionEnd = Vector2(directionEndX, directionEndY);
-        DrawLineEx(entityPosition, directionEnd, 2.5f / gridLayout.camera.zoom, Fade(Colors.PURPLE, 0.95f * entityDim));
-        DrawCircleV(directionEnd, 2.5f / gridLayout.camera.zoom, Fade(Colors.PURPLE, 0.95f * entityDim));
+        if (showEntityDetails) {
+            const directionLength = radius * 2.2f;
+            const directionAngle = entity.rotationY * (3.14159265f / 180.0f);
+            const directionEndX = entityPosition.x + cos(directionAngle) * directionLength;
+            const directionEndY = entityPosition.y + sin(directionAngle) * directionLength;
+            const directionEnd = Vector2(directionEndX, directionEndY);
+            DrawLineEx(entityPosition, directionEnd, 2.5f / gridLayout.camera.zoom, Fade(Colors.PURPLE, 0.95f * entityDim));
+            DrawCircleV(directionEnd, 2.5f / gridLayout.camera.zoom, Fade(Colors.PURPLE, 0.95f * entityDim));
+        }
         
         DrawCircleV(entityPosition, 1.5f / gridLayout.camera.zoom, Fade(Colors.BLACK, 0.85f * entityDim));
         
-        if (gridLayout.camera.zoom >= 1.1f || isSelected) {
+        if (showEntityDetails) {
             const textOffset = Vector2(0, -radius - 12.0f / gridLayout.camera.zoom);
             const textPos = Vector2(entityPosition.x + textOffset.x, entityPosition.y + textOffset.y);
-            const typeText = getEntityTypeName(entity.type);
+            const typeText = isSelected
+                ? format("%s (Y:%.1f)", getEntityTypeName(entity.type), entity.y)
+                : getEntityTypeName(entity.type);
+            const typeTextC = cstring(typeText);
             const fontSize = 14.0f / gridLayout.camera.zoom;
-            const textWidth = MeasureTextEx(GetFontDefault(), typeText.ptr, fontSize, fontSize / 10.0f).x;
-            DrawTextPro(GetFontDefault(), typeText.ptr, Vector2(textPos.x - textWidth / 2, textPos.y), Vector2(0, 0), 0.0f, fontSize, fontSize / 10.0f, Fade(Colors.BLACK, 0.95f * entityDim));
-            DrawTextPro(GetFontDefault(), typeText.ptr, Vector2(textPos.x - textWidth / 2 - 1.0f / gridLayout.camera.zoom, textPos.y - 1.0f / gridLayout.camera.zoom), Vector2(0, 0), 0.0f, fontSize, fontSize / 10.0f, Fade(Colors.WHITE, 0.95f * entityDim));
+            const textWidth = MeasureTextEx(GetFontDefault(), typeTextC, fontSize, fontSize / 10.0f).x;
+            DrawTextPro(GetFontDefault(), typeTextC, Vector2(textPos.x - textWidth / 2, textPos.y), Vector2(0, 0), 0.0f, fontSize, fontSize / 10.0f, Fade(Colors.BLACK, 0.95f * entityDim));
+            DrawTextPro(GetFontDefault(), typeTextC, Vector2(textPos.x - textWidth / 2 - 1.0f / gridLayout.camera.zoom, textPos.y - 1.0f / gridLayout.camera.zoom), Vector2(0, 0), 0.0f, fontSize, fontSize / 10.0f, Fade(Colors.WHITE, 0.95f * entityDim));
         }
     }
 
@@ -1863,69 +1956,25 @@ private void drawChunkEditorCanvas(
         const objectPosition = Vector2(obj.x, obj.z);
         const isSelected = selectedObjectIndicesContain(selectedObjectIndices, cast(int)objectIndex);
         const objectDim = (obj.layer == currentChunkLayer) ? 1.0f : 0.28f;
-        
-        Color objectColor;
-        final switch (obj.type) {
-        case ObjectType.hut:
-            objectColor = Color(160, 120, 80, 255);
-            break;
-        case ObjectType.tree:
-            objectColor = Color(34, 139, 34, 255); // Forest green
-            break;
-        case ObjectType.rock:
-            objectColor = Colors.GRAY;
-            break;
-        case ObjectType.crate:
-            objectColor = Colors.BROWN;
-            break;
-        case ObjectType.chair:
-            objectColor = Color(180, 140, 90, 255);
-            break;
-        case ObjectType.table:
-            objectColor = Color(200, 160, 100, 255);
-            break;
-        case ObjectType.boat:
-            objectColor = Color(70, 130, 180, 255); // Steel blue
-            break;
-        case ObjectType.dock:
-            objectColor = Color(101, 67, 33, 255);
-            break;
-        case ObjectType.building:
-            objectColor = Color(180, 160, 120, 255);
-            break;
-        case ObjectType.buoy:
-            objectColor = Colors.RED;
-            break;
-        case ObjectType.fishingNet:
-            objectColor = Color(200, 200, 150, 255);
-            break;
-        case ObjectType.coral:
-            objectColor = Color(255, 127, 80, 255); // Coral
-            break;
-        case ObjectType.underwaterRock:
-            objectColor = Color(100, 120, 140, 255);
-            break;
-        case ObjectType.festivalProp:
-            objectColor = Colors.PINK;
-            break;
-        }
+        const objectColor = getObjectPreviewColor(obj.type);
+        const showObjectDetails = isSelected || gridLayout.camera.zoom >= 3.0f;
         
         const radius = (isSelected ? 7.5f : 5.5f) / gridLayout.camera.zoom;
         DrawCircleV(objectPosition, radius, Fade(objectColor, 0.75f * objectDim));
         DrawCircleLinesV(objectPosition, radius * 1.2f, isSelected ? Fade(Colors.WHITE, 0.98f * objectDim) : Fade(Colors.BLACK, 0.60f * objectDim));
         
-        // Draw purple direction indicator
-        const directionLength = radius * 2.2f;
-        const directionAngle = obj.rotationY * (3.14159265f / 180.0f);
-        const directionEndX = objectPosition.x + cos(directionAngle) * directionLength;
-        const directionEndY = objectPosition.y + sin(directionAngle) * directionLength;
-        const directionEnd = Vector2(directionEndX, directionEndY);
-        DrawLineEx(objectPosition, directionEnd, 2.5f / gridLayout.camera.zoom, Fade(Colors.PURPLE, 0.95f * objectDim));
-        DrawCircleV(directionEnd, 2.5f / gridLayout.camera.zoom, Fade(Colors.PURPLE, 0.95f * objectDim));
+        if (showObjectDetails) {
+            const directionLength = radius * 2.2f;
+            const directionAngle = obj.rotationY * (3.14159265f / 180.0f);
+            const directionEndX = objectPosition.x + cos(directionAngle) * directionLength;
+            const directionEndY = objectPosition.y + sin(directionAngle) * directionLength;
+            const directionEnd = Vector2(directionEndX, directionEndY);
+            DrawLineEx(objectPosition, directionEnd, 2.5f / gridLayout.camera.zoom, Fade(Colors.PURPLE, 0.95f * objectDim));
+            DrawCircleV(directionEnd, 2.5f / gridLayout.camera.zoom, Fade(Colors.PURPLE, 0.95f * objectDim));
+        }
         
-        // Draw height indicator (skyblue vertical line)
         const heightLineLength = fabs(obj.y) * 0.5f;
-        if (heightLineLength > 0.5f) {
+        if (showObjectDetails && heightLineLength > 0.5f) {
             const heightEnd = Vector2(objectPosition.x, objectPosition.y - heightLineLength);
             DrawLineEx(objectPosition, heightEnd, 2.0f / gridLayout.camera.zoom, Fade(Colors.SKYBLUE, 0.85f * objectDim));
             DrawCircleV(heightEnd, 2.0f / gridLayout.camera.zoom, Fade(Colors.SKYBLUE, 0.85f * objectDim));
@@ -1933,15 +1982,17 @@ private void drawChunkEditorCanvas(
         
         DrawCircleV(objectPosition, 1.5f / gridLayout.camera.zoom, Fade(Colors.BLACK, 0.85f * objectDim));
         
-        if (gridLayout.camera.zoom >= 1.1f || isSelected) {
+        if (showObjectDetails) {
             const textOffset = Vector2(0, -radius - 12.0f / gridLayout.camera.zoom);
             const textPos = Vector2(objectPosition.x + textOffset.x, objectPosition.y + textOffset.y);
-            const typeText = getObjectTypeName(obj.type);
-            const heightText = to!string(TextFormat("%s (Y:%.1f)", typeText.ptr, obj.y));
+            const heightText = isSelected
+                ? format("%s (Y:%.1f)", getObjectTypeName(obj.type), obj.y)
+                : getObjectTypeName(obj.type);
+            const heightTextC = cstring(heightText);
             const fontSize = 14.0f / gridLayout.camera.zoom;
-            const textWidth = MeasureTextEx(GetFontDefault(), heightText.ptr, fontSize, fontSize / 10.0f).x;
-            DrawTextPro(GetFontDefault(), heightText.ptr, Vector2(textPos.x - textWidth / 2, textPos.y), Vector2(0, 0), 0.0f, fontSize, fontSize / 10.0f, Fade(Colors.BLACK, 0.95f * objectDim));
-            DrawTextPro(GetFontDefault(), heightText.ptr, Vector2(textPos.x - textWidth / 2 - 1.0f / gridLayout.camera.zoom, textPos.y - 1.0f / gridLayout.camera.zoom), Vector2(0, 0), 0.0f, fontSize, fontSize / 10.0f, Fade(Colors.WHITE, 0.95f * objectDim));
+            const textWidth = MeasureTextEx(GetFontDefault(), heightTextC, fontSize, fontSize / 10.0f).x;
+            DrawTextPro(GetFontDefault(), heightTextC, Vector2(textPos.x - textWidth / 2, textPos.y), Vector2(0, 0), 0.0f, fontSize, fontSize / 10.0f, Fade(Colors.BLACK, 0.95f * objectDim));
+            DrawTextPro(GetFontDefault(), heightTextC, Vector2(textPos.x - textWidth / 2 - 1.0f / gridLayout.camera.zoom, textPos.y - 1.0f / gridLayout.camera.zoom), Vector2(0, 0), 0.0f, fontSize, fontSize / 10.0f, Fade(Colors.WHITE, 0.95f * objectDim));
         }
     }
 
@@ -2386,28 +2437,9 @@ private void returnToMapFromChunkEditor(
     PlaySound(clickSound);
 }
 
-private string getEntityTypeName(EntityType type)
+private string getEntityTypeName(int type)
 {
-    final switch (type) {
-    case EntityType.player:
-        return "Player";
-    case EntityType.npc:
-        return "NPC";
-    case EntityType.fishCommon:
-        return "Fish (Common)";
-    case EntityType.fishRare:
-        return "Fish (Rare)";
-    case EntityType.fishLegendary:
-        return "Fish (Legendary)";
-    case EntityType.bird:
-        return "Bird";
-    case EntityType.insect:
-        return "Insect";
-    case EntityType.treasureChest:
-        return "Treasure Chest";
-    case EntityType.festivalDecoration:
-        return "Festival Decoration";
-    }
+    return getAssetDisplayName(gEntityDefinitions, type, "Entity");
 }
 
 private bool selectedEntityIndicesContain(int[] selectedEntityIndices, int entityIndex)
@@ -2478,38 +2510,9 @@ private void deleteSelectedEntities(
     PlaySound(deleteSound);
 }
 
-private string getObjectTypeName(ObjectType type)
+private string getObjectTypeName(int type)
 {
-    final switch (type) {
-    case ObjectType.hut:
-        return "Hut";
-    case ObjectType.tree:
-        return "Tree";
-    case ObjectType.rock:
-        return "Rock";
-    case ObjectType.crate:
-        return "Crate";
-    case ObjectType.chair:
-        return "Chair";
-    case ObjectType.table:
-        return "Table";
-    case ObjectType.boat:
-        return "Boat";
-    case ObjectType.dock:
-        return "Dock";
-    case ObjectType.building:
-        return "Building";
-    case ObjectType.buoy:
-        return "Buoy";
-    case ObjectType.fishingNet:
-        return "Fishing Net";
-    case ObjectType.coral:
-        return "Coral";
-    case ObjectType.underwaterRock:
-        return "Underwater Rock";
-    case ObjectType.festivalProp:
-        return "Festival Prop";
-    }
+    return getAssetDisplayName(gObjectDefinitions, type, "Object");
 }
 
 private bool selectedObjectIndicesContain(int[] selectedObjectIndices, int objectIndex)
@@ -2794,6 +2797,9 @@ private string serializeChunkToLeaf(MapChunk chunk, ChunkGeometry geometry)
         buf ~= format("n %d\n", face.normalDirection);
         buf ~= format("f %d %d\n", face.floorHeight, face.ceilingHeight);
         buf ~= format("l %d\n", face.layer);
+        if (face.isWater) {
+            buf ~= "t 1\n";
+        }
         buf ~= "\n";
     }
 
@@ -2834,16 +2840,16 @@ private string serializeChunkToLeaf(MapChunk chunk, ChunkGeometry geometry)
             obj.x, obj.y, obj.z,
             obj.rotationX, obj.rotationY, obj.rotationZ,
             obj.scaleX, obj.scaleY, obj.scaleZ,
-            cast(int)obj.type, obj.layer);
+            obj.type, obj.layer);
     }
 
-    // Entities: e x z rx ry rz sx sy sz type layer
+    // Entities: e x y z rx ry rz sx sy sz type layer
     foreach (entity; geometry.entities) {
-        buf ~= format("e %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %d %d\n",
-            entity.x, entity.z,
+        buf ~= format("e %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %d %d\n",
+            entity.x, entity.y, entity.z,
             entity.rotationX, entity.rotationY, entity.rotationZ,
             entity.scaleX, entity.scaleY, entity.scaleZ,
-            cast(int)entity.type, entity.layer);
+            entity.type, entity.layer);
     }
 
     buf ~= "ok\n";
@@ -2936,6 +2942,13 @@ private bool parseLeafSection(string[] lines, ref int lineIdx, ref ChunkGeometry
                     lineIdx++;
                 }
             }
+            if (lineIdx < lines.length) {
+                const fl = lines[lineIdx].strip();
+                if (fl.length >= 2 && fl[0] == 't') {
+                    try { face.isWater = fl[2..$].to!int != 0; } catch (Exception) {}
+                    lineIdx++;
+                }
+            }
             if (lineIdx < lines.length && lines[lineIdx].strip() == "") lineIdx++;
             geometry.faces ~= face;
             continue;
@@ -3018,7 +3031,7 @@ private bool parseLeafSection(string[] lines, ref int lineIdx, ref ChunkGeometry
                     obj.x = parts[0].to!float; obj.y = parts[1].to!float; obj.z = parts[2].to!float;
                     obj.rotationX = parts[3].to!float; obj.rotationY = parts[4].to!float; obj.rotationZ = parts[5].to!float;
                     obj.scaleX = parts[6].to!float; obj.scaleY = parts[7].to!float; obj.scaleZ = parts[8].to!float;
-                    obj.type = cast(ObjectType)parts[9].to!int;
+                    obj.type = parts[9].to!int;
                     if (parts.length >= 11) obj.layer = parts[10].to!int;
                     geometry.objects ~= obj;
                 } catch (Exception) {}
@@ -3027,17 +3040,26 @@ private bool parseLeafSection(string[] lines, ref int lineIdx, ref ChunkGeometry
             continue;
         }
 
-        // Entity: e x z rx ry rz sx sy sz type [layer]
+        // Entity: e x y z rx ry rz sx sy sz type [layer]
         if (line.length >= 2 && line[0] == 'e') {
             const parts = line[2..$].split(' ');
             if (parts.length >= 9) {
                 ChunkEntity entity;
                 try {
-                    entity.x = parts[0].to!float; entity.z = parts[1].to!float;
-                    entity.rotationX = parts[2].to!float; entity.rotationY = parts[3].to!float; entity.rotationZ = parts[4].to!float;
-                    entity.scaleX = parts[5].to!float; entity.scaleY = parts[6].to!float; entity.scaleZ = parts[7].to!float;
-                    entity.type = cast(EntityType)parts[8].to!int;
-                    if (parts.length >= 10) entity.layer = parts[9].to!int;
+                    if (parts.length >= 10) {
+                        entity.x = parts[0].to!float; entity.y = parts[1].to!float; entity.z = parts[2].to!float;
+                        entity.rotationX = parts[3].to!float; entity.rotationY = parts[4].to!float; entity.rotationZ = parts[5].to!float;
+                        entity.scaleX = parts[6].to!float; entity.scaleY = parts[7].to!float; entity.scaleZ = parts[8].to!float;
+                        entity.type = parts[9].to!int;
+                        if (parts.length >= 11) entity.layer = parts[10].to!int;
+                    } else {
+                        entity.x = parts[0].to!float; entity.z = parts[1].to!float;
+                        entity.y = getFloorHeightAtXZ(geometry, entity.x, entity.z);
+                        entity.rotationX = parts[2].to!float; entity.rotationY = parts[3].to!float; entity.rotationZ = parts[4].to!float;
+                        entity.scaleX = parts[5].to!float; entity.scaleY = parts[6].to!float; entity.scaleZ = parts[7].to!float;
+                        entity.type = parts[8].to!int;
+                        if (parts.length >= 10) entity.layer = parts[9].to!int;
+                    }
                     geometry.entities ~= entity;
                 } catch (Exception) {}
             }
@@ -3206,6 +3228,7 @@ private ChunkGeometry dupGeometry(const ChunkGeometry g)
     foreach (f; g.faces) {
         auto face = ChunkFace(f.pointIndices.dup, f.floorHeight, f.ceilingHeight, f.paletteIndex, f.normalDirection, f.autoWallFromHeightDifference, f.sameFloorAndCeiling);
         face.layer = f.layer;
+        face.isWater = f.isWater;
         result.faces ~= face;
     }
     return result;
@@ -3302,6 +3325,9 @@ int main()
     SetSoundVolume(connectSound, 0.55f);
     SetSoundVolume(applySound, 0.55f);
 
+    gEntityDefinitions = loadAssetDefinitions(entityAssetDirectory, ".png");
+    gObjectDefinitions = loadAssetDefinitions(objectAssetDirectory, ".obj");
+
     int selectedToolbarIndex = -1;
     Rectangle selectedToolbarButtonRect = Rectangle(0.0f, 0.0f, 0.0f, 0.0f);
     Vector2 waterOffset = Vector2.zero;
@@ -3348,7 +3374,8 @@ int main()
     int[] selectedWallIndices;
     int[] selectedEntityIndices;
     int[] selectedObjectIndices;
-    EntityType currentEntityType = EntityType.player;
+    int currentEntityType = 0;
+    float currentEntityHeight = 0.0f;
     float currentEntityRotationY = 0.0f;
     bool isBoxSelecting = false;
     Vector2 boxSelectStartWorld = Vector2.zero;
@@ -3356,11 +3383,15 @@ int main()
     Vector2 boxSelectStartScreen = Vector2.zero;
     bool isDraggingEntity = false;
     Vector2 entityDragStart = Vector2.zero;
-    ObjectType currentObjectType = ObjectType.crate;
+    int pendingEntityClickIndex = -1;
+    Vector2 pendingEntityClickScreen = Vector2.zero;
+    int currentObjectType = 0;
     float currentObjectRotationY = 0.0f;
     float currentObjectHeight = 0.0f;
     bool isDraggingObject = false;
     Vector2 objectDragStart = Vector2.zero;
+    int pendingObjectClickIndex = -1;
+    Vector2 pendingObjectClickScreen = Vector2.zero;
     float chunkInspectorScrollY = 0.0f;
     bool faceFloorEditMode = false;
     bool faceCeilingEditMode = false;
@@ -3382,6 +3413,9 @@ int main()
     bool shouldExit = false;
     bool showAboutDialog = false;
     bool showShortcutsDialog = false;
+
+    currentEntityType = getDefaultAssetId(gEntityDefinitions);
+    currentObjectType = getDefaultAssetId(gObjectDefinitions);
 
     while (!shouldExit) {
         const frameTime = GetFrameTime();
@@ -3882,6 +3916,24 @@ int main()
                 }
             }
 
+            const dragStartThreshold = 5.0f;
+
+            if (IsMouseButtonDown(MouseButton.MOUSE_BUTTON_LEFT) && pendingEntityClickIndex >= 0) {
+                if (Vector2Distance(GetMousePosition(), pendingEntityClickScreen) >= dragStartThreshold) {
+                    isDraggingEntity = true;
+                    pendingEntityClickIndex = -1;
+                    entityDragStart = GetScreenToWorld2D(mousePosition, chunkEditorLayout.camera);
+                }
+            }
+
+            if (IsMouseButtonDown(MouseButton.MOUSE_BUTTON_LEFT) && pendingObjectClickIndex >= 0) {
+                if (Vector2Distance(GetMousePosition(), pendingObjectClickScreen) >= dragStartThreshold) {
+                    isDraggingObject = true;
+                    pendingObjectClickIndex = -1;
+                    objectDragStart = GetScreenToWorld2D(mousePosition, chunkEditorLayout.camera);
+                }
+            }
+
             if (IsMouseButtonDown(MouseButton.MOUSE_BUTTON_LEFT) && isDraggingEntity && mouseInsideCanvas) {
                 const worldPosition = GetScreenToWorld2D(mousePosition, chunkEditorLayout.camera);
                 const dragOffset = Vector2(worldPosition.x - entityDragStart.x, worldPosition.y - entityDragStart.y);
@@ -3901,6 +3953,11 @@ int main()
                     chunkEditorMessage = to!string(TextFormat("Moved %d entity/entities.", cast(int)selectedEntityIndices.length));
                     PlaySound(clickSound);
                 }
+            } else if (IsMouseButtonReleased(MouseButton.MOUSE_BUTTON_LEFT) && pendingEntityClickIndex >= 0) {
+                selectedEntityIndices = selectedEntityIndices.filter!(index => index != pendingEntityClickIndex).array;
+                pendingEntityClickIndex = -1;
+                chunkEditorMessage = to!string(TextFormat("Selected %d entity/entities.", cast(int)selectedEntityIndices.length));
+                PlaySound(clickSound);
             } else if (IsMouseButtonDown(MouseButton.MOUSE_BUTTON_LEFT) && isDraggingObject && mouseInsideCanvas) {
                 const worldPosition = GetScreenToWorld2D(mousePosition, chunkEditorLayout.camera);
                 const dragOffset = Vector2(worldPosition.x - objectDragStart.x, worldPosition.y - objectDragStart.y);
@@ -3920,6 +3977,11 @@ int main()
                     chunkEditorMessage = to!string(TextFormat("Moved %d object(s).", cast(int)selectedObjectIndices.length));
                     PlaySound(clickSound);
                 }
+            } else if (IsMouseButtonReleased(MouseButton.MOUSE_BUTTON_LEFT) && pendingObjectClickIndex >= 0) {
+                selectedObjectIndices = selectedObjectIndices.filter!(index => index != pendingObjectClickIndex).array;
+                pendingObjectClickIndex = -1;
+                chunkEditorMessage = to!string(TextFormat("Selected %d object(s).", cast(int)selectedObjectIndices.length));
+                PlaySound(clickSound);
             } else if (IsMouseButtonPressed(MouseButton.MOUSE_BUTTON_LEFT) && mouseInsideCanvas && !isPanningCanvas) {
                 const worldPosition = GetScreenToWorld2D(mousePosition, chunkEditorLayout.camera);
                 const editChunk = placedChunks[editingChunkIndex];
@@ -3940,8 +4002,14 @@ int main()
                         PlaySound(touchSound);
                     }
                 } else if (chunkEditorTool == ChunkEditorTool.placeEntity) {
+                    if (gEntityDefinitions.length == 0) {
+                        chunkEditorMessage = "No entity assets found in resources/data/entities.";
+                        PlaySound(touchSound);
+                        continue;
+                    }
+                    const sectorFloorY = getFloorHeightAtXZ(chunkGeometries[editingChunkIndex], worldPosition.x, worldPosition.y);
                     ChunkEntity newEntity = ChunkEntity(
-                        worldPosition.x, worldPosition.y,
+                        worldPosition.x, sectorFloorY + currentEntityHeight, worldPosition.y,
                         0.0f, currentEntityRotationY, 0.0f,
                         1.0f, 1.0f, 1.0f,
                         currentEntityType
@@ -3954,11 +4022,17 @@ int main()
                     selectedFaceIndices.length = 0;
                     selectedWallIndices.length = 0;
                     selectedObjectIndices.length = 0;
-                    chunkEditorMessage = to!string(TextFormat("Placed entity: %s at %.1f, %.1f.", getEntityTypeName(currentEntityType).ptr, worldPosition.x, worldPosition.y));
+                    chunkEditorMessage = format("Placed entity: %s at %.1f, %.1f, %.1f.", getEntityTypeName(currentEntityType), worldPosition.x, newEntity.y, worldPosition.y);
                     PlaySound(placeSound);
                 } else if (chunkEditorTool == ChunkEditorTool.placeObject) {
+                    if (gObjectDefinitions.length == 0) {
+                        chunkEditorMessage = "No object assets found in resources/data/objects.";
+                        PlaySound(touchSound);
+                        continue;
+                    }
+                    const sectorFloorY = getFloorHeightAtXZ(chunkGeometries[editingChunkIndex], worldPosition.x, worldPosition.y);
                     ChunkObject newObject = ChunkObject(
-                        worldPosition.x, currentObjectHeight, worldPosition.y,
+                        worldPosition.x, sectorFloorY + currentObjectHeight, worldPosition.y,
                         0.0f, currentObjectRotationY, 0.0f,
                         1.0f, 1.0f, 1.0f,
                         currentObjectType
@@ -3971,15 +4045,15 @@ int main()
                     selectedFaceIndices.length = 0;
                     selectedWallIndices.length = 0;
                     selectedEntityIndices.length = 0;
-                    chunkEditorMessage = to!string(TextFormat("Placed object: %s at %.1f, %.1f, %.1f.", getObjectTypeName(currentObjectType).ptr, worldPosition.x, currentObjectHeight, worldPosition.y));
+                    chunkEditorMessage = format("Placed object: %s at %.1f, %.1f, %.1f.", getObjectTypeName(currentObjectType), worldPosition.x, newObject.y, worldPosition.y);
                     PlaySound(placeSound);
                 } else {
                     const objectIndex = findObjectAtWorldPosition(chunkGeometries[editingChunkIndex], worldPosition, 12.0f / chunkEditorCamera.zoom);
                     if (objectIndex >= 0) {
                         if (selectedObjectIndicesContain(selectedObjectIndices, objectIndex)) {
-                            // Clicked on already selected object - start dragging
-                            isDraggingObject = true;
-                            objectDragStart = worldPosition;
+                            pendingObjectClickIndex = objectIndex;
+                            pendingObjectClickScreen = mousePosition;
+                            pendingEntityClickIndex = -1;
                         } else {
                             selectedObjectIndices ~= objectIndex;
                             selectedPointIndices.length = 0;
@@ -3993,9 +4067,9 @@ int main()
                         const entityIndex = findEntityAtWorldPosition(chunkGeometries[editingChunkIndex], worldPosition, 12.0f / chunkEditorCamera.zoom);
                         if (entityIndex >= 0) {
                             if (selectedEntityIndicesContain(selectedEntityIndices, entityIndex)) {
-                                // Clicked on already selected entity - start dragging
-                                isDraggingEntity = true;
-                                entityDragStart = worldPosition;
+                                pendingEntityClickIndex = entityIndex;
+                                pendingEntityClickScreen = mousePosition;
+                                pendingObjectClickIndex = -1;
                             } else {
                                 selectedEntityIndices ~= entityIndex;
                                 selectedPointIndices.length = 0;
@@ -4113,6 +4187,9 @@ int main()
             isPanningCanvas = false;
             isBoxSelecting = false;
             isDraggingEntity = false;
+            isDraggingObject = false;
+            pendingEntityClickIndex = -1;
+            pendingObjectClickIndex = -1;
         }
 
         waterOffset.x = cast(float)fmod(waterOffset.x + backgroundSpeed * frameTime, cast(double)waterTexture.width);
@@ -4396,32 +4473,47 @@ int main()
 
                     if (chunkEditorTool == ChunkEditorTool.placeEntity) {
                         GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(0.0f), 100.0f, 24.0f), "Entity Type:");
-                        int entityTypeValue = cast(int)currentEntityType;
                         if (GuiButton(Rectangle(inspectorRect.x + 108.0f, iy(-2.0f), 24.0f, 24.0f), "<")) {
-                            if (entityTypeValue > 0) {
-                                currentEntityType = cast(EntityType)(entityTypeValue - 1);
+                            if (stepAssetId(currentEntityType, gEntityDefinitions, -1)) {
                                 PlaySound(clickSound);
+                            } else {
+                                PlaySound(touchSound);
                             }
                         }
-                        GuiLabel(Rectangle(inspectorRect.x + 136.0f, iy(0.0f), 68.0f, 24.0f), getEntityTypeName(currentEntityType).ptr);
+                        GuiLabel(Rectangle(inspectorRect.x + 136.0f, iy(0.0f), 104.0f, 24.0f), gEntityDefinitions.length > 0 ? cstring(getEntityTypeName(currentEntityType)) : "No entities");
                         if (GuiButton(Rectangle(inspectorRect.x + 208.0f, iy(-2.0f), 24.0f, 24.0f), ">")) {
-                            if (entityTypeValue < cast(int)EntityType.max) {
-                                currentEntityType = cast(EntityType)(entityTypeValue + 1);
+                            if (stepAssetId(currentEntityType, gEntityDefinitions, 1)) {
                                 PlaySound(clickSound);
+                            } else {
+                                PlaySound(touchSound);
                             }
                         }
 
-                        GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(28.0f), 100.0f, 24.0f), TextFormat("Rotation: %.0f", currentEntityRotationY));
+                        GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(28.0f), 100.0f, 24.0f), TextFormat("Y Offset: %.1f", currentEntityHeight));
+                        if (GuiButton(Rectangle(inspectorRect.x + 108.0f, iy(26.0f), 24.0f, 24.0f), "-")) {
+                            currentEntityHeight -= 1.0f;
+                            PlaySound(clickSound);
+                        }
+                        if (GuiButton(Rectangle(inspectorRect.x + 136.0f, iy(26.0f), 48.0f, 24.0f), "Reset")) {
+                            currentEntityHeight = 0.0f;
+                            PlaySound(clickSound);
+                        }
+                        if (GuiButton(Rectangle(inspectorRect.x + 188.0f, iy(26.0f), 24.0f, 24.0f), "+")) {
+                            currentEntityHeight += 1.0f;
+                            PlaySound(clickSound);
+                        }
+
+                        GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(56.0f), 100.0f, 24.0f), TextFormat("Rotation: %.0f", currentEntityRotationY));
                         if (GuiButton(Rectangle(inspectorRect.x + 108.0f, iy(26.0f), 24.0f, 24.0f), "<")) {
                             currentEntityRotationY -= 15.0f;
                             if (currentEntityRotationY < 0.0f) currentEntityRotationY += 360.0f;
                             PlaySound(clickSound);
                         }
-                        if (GuiButton(Rectangle(inspectorRect.x + 136.0f, iy(26.0f), 48.0f, 24.0f), "Reset")) {
+                        if (GuiButton(Rectangle(inspectorRect.x + 136.0f, iy(54.0f), 48.0f, 24.0f), "Reset")) {
                             currentEntityRotationY = 0.0f;
                             PlaySound(clickSound);
                         }
-                        if (GuiButton(Rectangle(inspectorRect.x + 188.0f, iy(26.0f), 24.0f, 24.0f), ">")) {
+                        if (GuiButton(Rectangle(inspectorRect.x + 188.0f, iy(54.0f), 24.0f, 24.0f), ">")) {
                             currentEntityRotationY += 15.0f;
                             if (currentEntityRotationY >= 360.0f) currentEntityRotationY -= 360.0f;
                             PlaySound(clickSound);
@@ -4430,22 +4522,23 @@ int main()
 
                     if (chunkEditorTool == ChunkEditorTool.placeObject) {
                         GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(0.0f), 100.0f, 24.0f), "Object Type:");
-                        int objectTypeValue = cast(int)currentObjectType;
                         if (GuiButton(Rectangle(inspectorRect.x + 108.0f, iy(-2.0f), 24.0f, 24.0f), "<")) {
-                            if (objectTypeValue > 0) {
-                                currentObjectType = cast(ObjectType)(objectTypeValue - 1);
+                            if (stepAssetId(currentObjectType, gObjectDefinitions, -1)) {
                                 PlaySound(clickSound);
+                            } else {
+                                PlaySound(touchSound);
                             }
                         }
-                        GuiLabel(Rectangle(inspectorRect.x + 136.0f, iy(0.0f), 68.0f, 24.0f), getObjectTypeName(currentObjectType).ptr);
+                        GuiLabel(Rectangle(inspectorRect.x + 136.0f, iy(0.0f), 104.0f, 24.0f), gObjectDefinitions.length > 0 ? cstring(getObjectTypeName(currentObjectType)) : "No objects");
                         if (GuiButton(Rectangle(inspectorRect.x + 208.0f, iy(-2.0f), 24.0f, 24.0f), ">")) {
-                            if (objectTypeValue < cast(int)ObjectType.max) {
-                                currentObjectType = cast(ObjectType)(objectTypeValue + 1);
+                            if (stepAssetId(currentObjectType, gObjectDefinitions, 1)) {
                                 PlaySound(clickSound);
+                            } else {
+                                PlaySound(touchSound);
                             }
                         }
 
-                        GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(28.0f), 100.0f, 24.0f), TextFormat("Height: %.1f", currentObjectHeight));
+                        GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(28.0f), 100.0f, 24.0f), TextFormat("Y Offset: %.1f", currentObjectHeight));
                         if (GuiButton(Rectangle(inspectorRect.x + 108.0f, iy(26.0f), 24.0f, 24.0f), "-")) {
                             currentObjectHeight -= 1.0f;
                             PlaySound(clickSound);
@@ -4732,7 +4825,7 @@ int main()
 
                         const batchFaceNormStr = batchFaceNormalValue < 0 ? "Back Only" : (batchFaceNormalValue > 0 ? "Front Only" : "Both");
                         GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(440.0f), 60.0f, 24.0f), "Normal:");
-                        GuiLabel(Rectangle(inspectorRect.x + 76.0f, iy(440.0f), 76.0f, 24.0f), batchFaceNormStr.ptr);
+                        GuiLabel(Rectangle(inspectorRect.x + 76.0f, iy(440.0f), 76.0f, 24.0f), cstring(batchFaceNormStr));
                         if (GuiButton(Rectangle(inspectorRect.x + 156.0f, iy(438.0f), 24.0f, 24.0f), "<")) {
                             if (batchFaceNormalValue > -1) { batchFaceNormalValue--; PlaySound(clickSound); } else PlaySound(touchSound);
                         }
@@ -4859,17 +4952,26 @@ int main()
                             }
                             drawPaletteSwatch(ditherTexture, ditherImage, face.paletteIndex, Rectangle(inspectorRect.x + 16.0f, iy(408.0f), inspectorRect.width - 32.0f, 24.0f), contentAreaRect);
 
+                            GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(440.0f), 56.0f, 24.0f), "Water:");
+                            GuiLabel(Rectangle(inspectorRect.x + 76.0f, iy(440.0f), 56.0f, 24.0f), face.isWater ? "Yes" : "No");
+                            if (GuiButton(Rectangle(inspectorRect.x + 156.0f, iy(438.0f), 72.0f, 24.0f), face.isWater ? "Disable" : "Enable")) {
+                                pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
+                                face.isWater = !face.isWater;
+                                chunkEditorMessage = face.isWater ? "Face marked as water." : "Face water flag removed.";
+                                PlaySound(clickSound);
+                            }
+
                             const faceNormStr = face.normalDirection < 0 ? "Back Only" : (face.normalDirection > 0 ? "Front Only" : "Both");
-                            GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(440.0f), 60.0f, 24.0f), "Normal:");
-                            GuiLabel(Rectangle(inspectorRect.x + 76.0f, iy(440.0f), 76.0f, 24.0f), faceNormStr.ptr);
-                            if (GuiButton(Rectangle(inspectorRect.x + 156.0f, iy(438.0f), 24.0f, 24.0f), "<")) {
+                            GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(468.0f), 60.0f, 24.0f), "Normal:");
+                            GuiLabel(Rectangle(inspectorRect.x + 76.0f, iy(468.0f), 76.0f, 24.0f), cstring(faceNormStr));
+                            if (GuiButton(Rectangle(inspectorRect.x + 156.0f, iy(466.0f), 24.0f, 24.0f), "<")) {
                                 if (face.normalDirection > -1) {
                                     pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
                                     face.normalDirection--;
                                     PlaySound(clickSound);
                                 } else PlaySound(touchSound);
                             }
-                            if (GuiButton(Rectangle(inspectorRect.x + 184.0f, iy(438.0f), 24.0f, 24.0f), ">")) {
+                            if (GuiButton(Rectangle(inspectorRect.x + 184.0f, iy(466.0f), 24.0f, 24.0f), ">")) {
                                 if (face.normalDirection < 1) {
                                     pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
                                     face.normalDirection++;
@@ -4964,7 +5066,7 @@ int main()
 
                         const batchWallNormStr = batchWallNormalValue < 0 ? "Back Only" : (batchWallNormalValue > 0 ? "Front Only" : "Both");
                         GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(440.0f), 60.0f, 24.0f), "Normal:");
-                        GuiLabel(Rectangle(inspectorRect.x + 76.0f, iy(440.0f), 76.0f, 24.0f), batchWallNormStr.ptr);
+                        GuiLabel(Rectangle(inspectorRect.x + 76.0f, iy(440.0f), 76.0f, 24.0f), cstring(batchWallNormStr));
                         if (GuiButton(Rectangle(inspectorRect.x + 156.0f, iy(438.0f), 24.0f, 24.0f), "<")) {
                             if (batchWallNormalValue > -1) { batchWallNormalValue--; PlaySound(clickSound); } else PlaySound(touchSound);
                         }
@@ -5037,7 +5139,7 @@ int main()
 
                             const wallNormStr = wall.normalDirection < 0 ? "Back Only" : (wall.normalDirection > 0 ? "Front Only" : "Both");
                             GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(410.0f), 60.0f, 24.0f), "Normal:");
-                            GuiLabel(Rectangle(inspectorRect.x + 76.0f, iy(410.0f), 76.0f, 24.0f), wallNormStr.ptr);
+                            GuiLabel(Rectangle(inspectorRect.x + 76.0f, iy(410.0f), 76.0f, 24.0f), cstring(wallNormStr));
                             if (GuiButton(Rectangle(inspectorRect.x + 156.0f, iy(408.0f), 24.0f, 24.0f), "<")) {
                                 if (wall.normalDirection > -1) {
                                     pushChunkUndo(chunkUndoStack, chunkGeometries[editingChunkIndex]);
@@ -5059,37 +5161,52 @@ int main()
                         const selectedEntityIndex = selectedEntityIndices[0];
                         if (selectedEntityIndex >= 0 && selectedEntityIndex < cast(int)chunkGeometries[editingChunkIndex].entities.length) {
                             auto entity = &chunkGeometries[editingChunkIndex].entities[selectedEntityIndex];
-                            GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(262.0f), inspectorRect.width - 32.0f, 24.0f), TextFormat("Entity %d: %s", selectedEntityIndex + 1, getEntityTypeName(entity.type).ptr));
+                            GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(262.0f), inspectorRect.width - 32.0f, 24.0f), cstring(format("Entity %d: %s", selectedEntityIndex + 1, getEntityTypeName(entity.type))));
 
-                            GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(286.0f), 120.0f, 24.0f), TextFormat("Position: %.1f, %.1f", entity.x, entity.z));
+                            GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(286.0f), 156.0f, 24.0f), TextFormat("Pos: %.1f, %.1f, %.1f", entity.x, entity.y, entity.z));
 
                             GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(310.0f), 100.0f, 24.0f), "Type:");
-                            int entityTypeValue = cast(int)entity.type;
                             if (GuiButton(Rectangle(inspectorRect.x + 56.0f, iy(308.0f), 24.0f, 24.0f), "<")) {
-                                if (entityTypeValue > 0) {
-                                    entity.type = cast(EntityType)(entityTypeValue - 1);
+                                if (stepAssetId(entity.type, gEntityDefinitions, -1)) {
                                     PlaySound(clickSound);
+                                } else {
+                                    PlaySound(touchSound);
                                 }
                             }
-                            GuiLabel(Rectangle(inspectorRect.x + 84.0f, iy(310.0f), 100.0f, 24.0f), getEntityTypeName(entity.type).ptr);
+                            GuiLabel(Rectangle(inspectorRect.x + 84.0f, iy(310.0f), 100.0f, 24.0f), cstring(getEntityTypeName(entity.type)));
                             if (GuiButton(Rectangle(inspectorRect.x + 188.0f, iy(308.0f), 24.0f, 24.0f), ">")) {
-                                if (entityTypeValue < cast(int)EntityType.max) {
-                                    entity.type = cast(EntityType)(entityTypeValue + 1);
+                                if (stepAssetId(entity.type, gEntityDefinitions, 1)) {
                                     PlaySound(clickSound);
+                                } else {
+                                    PlaySound(touchSound);
                                 }
                             }
 
-                            GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(334.0f), 100.0f, 24.0f), TextFormat("Rotation: %.0f", entity.rotationY));
+                            GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(334.0f), 100.0f, 24.0f), TextFormat("Y: %.1f", entity.y));
                             if (GuiButton(Rectangle(inspectorRect.x + 108.0f, iy(332.0f), 24.0f, 24.0f), "-")) {
+                                entity.y -= 1.0f;
+                                PlaySound(clickSound);
+                            }
+                            if (GuiButton(Rectangle(inspectorRect.x + 136.0f, iy(332.0f), 48.0f, 24.0f), "Floor")) {
+                                entity.y = getFloorHeightAtXZ(chunkGeometries[editingChunkIndex], entity.x, entity.z);
+                                PlaySound(clickSound);
+                            }
+                            if (GuiButton(Rectangle(inspectorRect.x + 188.0f, iy(332.0f), 24.0f, 24.0f), "+")) {
+                                entity.y += 1.0f;
+                                PlaySound(clickSound);
+                            }
+
+                            GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(358.0f), 100.0f, 24.0f), TextFormat("Rotation: %.0f", entity.rotationY));
+                            if (GuiButton(Rectangle(inspectorRect.x + 108.0f, iy(356.0f), 24.0f, 24.0f), "-")) {
                                 entity.rotationY -= 15.0f;
                                 if (entity.rotationY < 0.0f) entity.rotationY += 360.0f;
                                 PlaySound(clickSound);
                             }
-                            if (GuiButton(Rectangle(inspectorRect.x + 136.0f, iy(332.0f), 48.0f, 24.0f), "Reset")) {
+                            if (GuiButton(Rectangle(inspectorRect.x + 136.0f, iy(356.0f), 48.0f, 24.0f), "Reset")) {
                                 entity.rotationY = 0.0f;
                                 PlaySound(clickSound);
                             }
-                            if (GuiButton(Rectangle(inspectorRect.x + 188.0f, iy(332.0f), 24.0f, 24.0f), ">")) {
+                            if (GuiButton(Rectangle(inspectorRect.x + 188.0f, iy(356.0f), 24.0f, 24.0f), ">")) {
                                 entity.rotationY += 15.0f;
                                 if (entity.rotationY >= 360.0f) entity.rotationY -= 360.0f;
                                 PlaySound(clickSound);
@@ -5110,7 +5227,7 @@ int main()
                         if (GuiButton(Rectangle(inspectorRect.x + 136.0f, iy(284.0f), 48.0f, 24.0f), "Reset")) {
                             foreach (idx; selectedObjectIndices) {
                                 if (idx >= 0 && idx < cast(int)chunkGeometries[editingChunkIndex].objects.length)
-                                    chunkGeometries[editingChunkIndex].objects[idx].y = 0.0f;
+                                    chunkGeometries[editingChunkIndex].objects[idx].y = getFloorHeightAtXZ(chunkGeometries[editingChunkIndex], chunkGeometries[editingChunkIndex].objects[idx].x, chunkGeometries[editingChunkIndex].objects[idx].z);
                             }
                             PlaySound(clickSound);
                         }
@@ -5155,33 +5272,34 @@ int main()
                         const selectedObjectIndex = selectedObjectIndices[0];
                         if (selectedObjectIndex >= 0 && selectedObjectIndex < cast(int)chunkGeometries[editingChunkIndex].objects.length) {
                             auto obj = &chunkGeometries[editingChunkIndex].objects[selectedObjectIndex];
-                            GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(262.0f), inspectorRect.width - 32.0f, 24.0f), TextFormat("Object %d: %s", selectedObjectIndex + 1, getObjectTypeName(obj.type).ptr));
+                            GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(262.0f), inspectorRect.width - 32.0f, 24.0f), cstring(format("Object %d: %s", selectedObjectIndex + 1, getObjectTypeName(obj.type))));
 
                             GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(286.0f), 156.0f, 24.0f), TextFormat("Pos: %.1f, %.1f, %.1f", obj.x, obj.y, obj.z));
 
                             GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(310.0f), 100.0f, 24.0f), "Type:");
-                            int objectTypeValue = cast(int)obj.type;
                             if (GuiButton(Rectangle(inspectorRect.x + 56.0f, iy(308.0f), 24.0f, 24.0f), "<")) {
-                                if (objectTypeValue > 0) {
-                                    obj.type = cast(ObjectType)(objectTypeValue - 1);
+                                if (stepAssetId(obj.type, gObjectDefinitions, -1)) {
                                     PlaySound(clickSound);
+                                } else {
+                                    PlaySound(touchSound);
                                 }
                             }
-                            GuiLabel(Rectangle(inspectorRect.x + 84.0f, iy(310.0f), 100.0f, 24.0f), getObjectTypeName(obj.type).ptr);
+                            GuiLabel(Rectangle(inspectorRect.x + 84.0f, iy(310.0f), 100.0f, 24.0f), cstring(getObjectTypeName(obj.type)));
                             if (GuiButton(Rectangle(inspectorRect.x + 188.0f, iy(308.0f), 24.0f, 24.0f), ">")) {
-                                if (objectTypeValue < cast(int)ObjectType.max) {
-                                    obj.type = cast(ObjectType)(objectTypeValue + 1);
+                                if (stepAssetId(obj.type, gObjectDefinitions, 1)) {
                                     PlaySound(clickSound);
+                                } else {
+                                    PlaySound(touchSound);
                                 }
                             }
 
-                            GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(334.0f), 100.0f, 24.0f), TextFormat("Height: %.1f", obj.y));
+                            GuiLabel(Rectangle(inspectorRect.x + 16.0f, iy(334.0f), 100.0f, 24.0f), TextFormat("Y: %.1f", obj.y));
                             if (GuiButton(Rectangle(inspectorRect.x + 108.0f, iy(332.0f), 24.0f, 24.0f), "-")) {
                                 obj.y -= 1.0f;
                                 PlaySound(clickSound);
                             }
-                            if (GuiButton(Rectangle(inspectorRect.x + 136.0f, iy(332.0f), 48.0f, 24.0f), "Reset")) {
-                                obj.y = 0.0f;
+                            if (GuiButton(Rectangle(inspectorRect.x + 136.0f, iy(332.0f), 48.0f, 24.0f), "Floor")) {
+                                obj.y = getFloorHeightAtXZ(chunkGeometries[editingChunkIndex], obj.x, obj.z);
                                 PlaySound(clickSound);
                             }
                             if (GuiButton(Rectangle(inspectorRect.x + 188.0f, iy(332.0f), 24.0f, 24.0f), "+")) {
