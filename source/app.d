@@ -2812,7 +2812,7 @@ private string serializeChunkToLeaf(MapChunk chunk, ChunkGeometry geometry)
         cast(int)geometry.objects.length,
         cast(int)geometry.entities.length);
 
-    // Faces: s x z ... p palette  f y0 y1  l layer
+    // Faces: s x z ... p palette  [t 1]  f y0 y1  l layer
     foreach (face; geometry.faces) {
         foreach (pointIndex; face.pointIndices) {
             if (pointIndex < 0 || pointIndex >= cast(int)geometry.points.length) continue;
@@ -2821,11 +2821,11 @@ private string serializeChunkToLeaf(MapChunk chunk, ChunkGeometry geometry)
         }
         buf ~= format("p %d\n", face.paletteIndex);
         buf ~= format("n %d\n", face.normalDirection);
-        buf ~= format("f %d %d\n", face.floorHeight, face.ceilingHeight);
-        buf ~= format("l %d\n", face.layer);
         if (face.isWater) {
             buf ~= "t 1\n";
         }
+        buf ~= format("f %d %d\n", face.floorHeight, face.ceilingHeight);
+        buf ~= format("l %d\n", face.layer);
         buf ~= "\n";
     }
 
@@ -2947,6 +2947,13 @@ private bool parseLeafSection(string[] lines, ref int lineIdx, ref ChunkGeometry
                 const fl = lines[lineIdx].strip();
                 if (fl.length >= 2 && fl[0] == 'n') {
                     try { face.normalDirection = fl[2..$].to!int; } catch (Exception) {}
+                    lineIdx++;
+                }
+            }
+            if (lineIdx < lines.length) {
+                const fl = lines[lineIdx].strip();
+                if (fl.length >= 2 && fl[0] == 't') {
+                    try { face.isWater = fl[2..$].to!int != 0; } catch (Exception) {}
                     lineIdx++;
                 }
             }
